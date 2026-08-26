@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Mini IDE
+Comment=로컬 AI(Ollama) 연동 미니 코드 에디터
+Exec=/mnt/c/mini_vs/miniide_c/miniide_c
+Path=/mnt/c/mini_vs/miniide_c
+Icon=miniide
+Terminal=false
+Categories=Development;IDE;
+StartupNotify=true
