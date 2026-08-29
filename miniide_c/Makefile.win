@@ -33,15 +33,26 @@ bundle: $(TARGET)
 	cp $(TARGET) $(APPDIR)/bin/
 	# exe 가 필요로 하는 DLL 들을 ldd 로 찾아 복사
 	ldd $(TARGET) | awk '/mingw64|\/msys-/ {print $$3}' | sort -u | while read dll; do cp "$$dll" $(APPDIR)/bin/ 2>/dev/null || true; done
-	# GTK 리소스: 스키마 / 아이콘 테마 / gdk-pixbuf 로더 / gtk 설정
+	# GTK 리소스: 스키마 / 아이콘 테마 / gdk-pixbuf 로더 / gtk 설정 / mime DB
 	cp -r $(MINGW_PREFIX)/lib/gdk-pixbuf-2.0 $(APPDIR)/lib/
 	mkdir -p $(APPDIR)/share/glib-2.0
 	cp -r $(MINGW_PREFIX)/share/glib-2.0/schemas $(APPDIR)/share/glib-2.0/
 	mkdir -p $(APPDIR)/share/icons
 	cp -r $(MINGW_PREFIX)/share/icons/Adwaita $(APPDIR)/share/icons/ 2>/dev/null || true
-	cp -r $(MINGW_PREFIX)/share/icons/hicolor/index.theme $(APPDIR)/share/icons/ 2>/dev/null || mkdir -p $(APPDIR)/share/icons/hicolor
+	cp -r $(MINGW_PREFIX)/share/icons/hicolor $(APPDIR)/share/icons/ 2>/dev/null || true
+	cp -r $(MINGW_PREFIX)/share/mime $(APPDIR)/share/ 2>/dev/null || true
 	cp -r $(MINGW_PREFIX)/etc/gtk-3.0 $(APPDIR)/etc/ 2>/dev/null || true
-	@echo "== bundle done: $(APPDIR)"
+	# gdk-pixbuf 로더(SVG 등)가 의존하는 DLL(librsvg/libxml2…)까지 복사한다.
+	# ldd 는 exe 의존만 보므로 로더와 bin/*.dll 의 의존을 반복해 닫는다.
+	for dll in $(APPDIR)/lib/gdk-pixbuf-2.0/2.10.0/loaders/*.dll; do \
+		ldd "$$dll" | awk '/mingw64/ {print $$3}' | sort -u | while read d; do cp -n "$$d" $(APPDIR)/bin/ 2>/dev/null || true; done; \
+	done
+	for pass in 1 2 3; do \
+		for dll in $(APPDIR)/bin/*.dll; do \
+			ldd "$$dll" | awk '/mingw64/ {print $$3}' | sort -u | while read d; do cp -n "$$d" $(APPDIR)/bin/ 2>/dev/null || true; done; \
+		done; \
+	done
+	@echo "== bundle done: $(APPDIR) ($(shell ls $(APPDIR)/bin/*.dll 2>/dev/null | wc -l) DLLs)"
 
 # NSIS 인스톨러 생성 (NSIS 스크립트는 installer/miniide.nsi)
 installer: bundle
