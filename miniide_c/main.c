@@ -16,6 +16,8 @@
 #include "terminal.h"
 #include "ai_panel.h"
 #include "ui_lang.h"
+#include "theme.h"
+#include "recent.h"
 
 typedef struct AppState AppState;
 
@@ -35,11 +37,20 @@ struct AppState {
     GtkNotebook *bottom_tabs;
     GtkNotebook *editor_tabs;   /* 3번 기능: 파일 탭 묶음 */
     GtkWidget *menu_bar;        /* 언어 전환 시 통째로 다시 만들기 위해 보관 */
+    GtkWidget *toolbar;         /* 메뉴 아래 아이콘 버튼줄 (언어 전환 시 라벨 갱신) */
+    GtkWidget *tb_new, *tb_open_file, *tb_open_folder, *tb_save, *tb_run;
+    GtkWidget *welcome_page;    /* 시작 화면 — 파일을 열면 사라지고 탭이 없으면 다시 나타난다 */
 
     Explorer *explorer;
     Terminal *terminal;
     AiPanel *ai_panel;
 };
+
+/* 시작 화면 관련 — 아래쪽에 정의 */
+static void welcome_show(AppState *app);
+static void welcome_hide(AppState *app);
+static void open_file_dialog(AppState *app);
+static void toolbar_refresh_language(AppState *app);
 
 static void close_tab_button_clicked(GtkButton *btn, gpointer user_data);
 static void add_new_tab(AppState *app, const char *path, const char *content, gboolean switch_to_it);
@@ -127,6 +138,7 @@ static void save_tab_as(AppState *app, EditorTab *tab) {
         tab->file_path = g_strdup(path);
         g_free(path);
         gtk_widget_destroy(dialog);
+        recent_add(tab->file_path);  /* 새 이름으로 저장한 파일도 최근 목록에 */
         save_tab(app, tab);
         return;
     }
@@ -170,6 +182,7 @@ static void save_file_as(AppState *app) {
 }
 
 static void new_file(AppState *app) {
+    welcome_hide(app);
     add_new_tab(app, NULL, "", TRUE);
 }
 
@@ -225,8 +238,132 @@ static void load_file_into_editor(const char *path, void *user_data) {
         return;
     }
 
+    welcome_hide(app);
     add_new_tab(app, path, content, TRUE);
+    recent_add(path);  /* 최근 파일 목록 맨 앞에 기록 */
     g_free(content);
+}
+
+/* ---------------- 파일 직접 열기 (단일 파일 대화상자) ---------------- */
+
+static void open_file_dialog(AppState *app) {
+    GtkWidget *dialog = gtk_file_chooser_dialog_new(
+        tr(STR_FILE_SELECT), app->window, GTK_FILE_CHOOSER_ACTION_OPEN,
+        tr(STR_BTN_CANCEL), GTK_RESPONSE_CANCEL, tr(STR_BTN_OPEN), GTK_RESPONSE_ACCEPT, NULL);
+
+    GtkFileFilter *filter = gtk_file_filter_new();
+    gtk_file_filter_set_name(filter, tr(STR_FILE_FILTER_NAME));
+    gtk_file_filter_add_pattern(filter, "*");
+    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dialog), filter);
+
+    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
+        char *path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
+        gtk_widget_destroy(dialog);
+        if (path) {
+            load_file_into_editor(path, app);
+            g_free(path);
+        }
+        return;
+    }
+    gtk_widget_destroy(dialog);
+}
+
+/* ---------------- 시작 화면 (웰컴 페이지) ---------------- */
+
+/* 웰컴 페이지의 최근 파일 항목 — 버튼에 경로를 달아둔다 */
+static void on_welcome_recent_clicked(GtkButton *btn, gpointer user_data) {
+    AppState *app = (AppState *)user_data;
+    const char *path = g_object_get_data(G_OBJECT(btn), "path");
+    if (path) load_file_into_editor(path, app);
+}
+
+static void on_welcome_new(GtkButton *btn, gpointer user_data) { (void)btn; new_file((AppState *)user_data); }
+static void on_welcome_open_file(GtkButton *btn, gpointer user_data) { (void)btn; open_file_dialog((AppState *)user_data); }
+static void on_welcome_open_folder(GtkButton *btn, gpointer user_data) {
+    (void)btn;
+    explorer_open_folder_dialog(((AppState *)user_data)->explorer);
+}
+
+/* 웰컴 페이지용 평평한 버튼 한 개 만들기 — 텍스트 왼쪽 정렬 */
+static GtkWidget *welcome_button(AppState *app, const char *text, GCallback cb) {
+    GtkWidget *btn = gtk_button_new_with_label(text);
+    gtk_widget_set_halign(btn, GTK_ALIGN_START);
+    gtk_widget_set_focus_on_click(btn, FALSE);
+    GtkWidget *child = gtk_bin_get_child(GTK_BIN(btn));
+    if (child) gtk_widget_set_halign(child, GTK_ALIGN_START);
+    g_signal_connect(btn, "clicked", cb, app);
+    return btn;
+}
+
+static GtkWidget *build_welcome_page(AppState *app) {
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_widget_set_halign(box, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(box, GTK_ALIGN_CENTER);
+    gtk_widget_set_margin_top(box, 48);
+    gtk_widget_set_margin_bottom(box, 48);
+    gtk_widget_set_margin_start(box, 48);
+    gtk_widget_set_margin_end(box, 48);
+
+    GtkWidget *title = gtk_label_new(tr(STR_WELCOME_TITLE));
+    gtk_style_context_add_class(gtk_widget_get_style_context(title), "welcome-title");
+    gtk_box_pack_start(GTK_BOX(box), title, FALSE, FALSE, 0);
+
+    GtkWidget *sub = gtk_label_new(tr(STR_WELCOME_SUB));
+    gtk_style_context_add_class(gtk_widget_get_style_context(sub), "welcome-sub");
+    gtk_box_pack_start(GTK_BOX(box), sub, FALSE, FALSE, 14);
+
+    GtkWidget *actions = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_box_pack_start(GTK_BOX(actions), welcome_button(app, tr(STR_WELCOME_NEW), G_CALLBACK(on_welcome_new)), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(actions), welcome_button(app, tr(STR_WELCOME_OPEN_FILE), G_CALLBACK(on_welcome_open_file)), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(actions), welcome_button(app, tr(STR_WELCOME_OPEN_FOLDER), G_CALLBACK(on_welcome_open_folder)), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), actions, FALSE, FALSE, 10);
+
+    GtkWidget *section = gtk_label_new(tr(STR_WELCOME_RECENT));
+    gtk_style_context_add_class(gtk_widget_get_style_context(section), "welcome-section");
+    gtk_widget_set_halign(section, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(box), section, FALSE, FALSE, 12);
+
+    char **recents = recent_get();
+    if (!recents || !recents[0]) {
+        GtkWidget *empty = gtk_label_new(tr(STR_RECENT_EMPTY));
+        gtk_style_context_add_class(gtk_widget_get_style_context(empty), "welcome-sub");
+        gtk_widget_set_halign(empty, GTK_ALIGN_START);
+        gtk_box_pack_start(GTK_BOX(box), empty, FALSE, FALSE, 0);
+    } else {
+        for (int i = 0; recents[i]; i++) {
+            char *base = g_path_get_basename(recents[i]);
+            GtkWidget *btn = welcome_button(app, base, G_CALLBACK(on_welcome_recent_clicked));
+            gtk_widget_set_tooltip_text(btn, recents[i]);
+            g_object_set_data_full(G_OBJECT(btn), "path", g_strdup(recents[i]), g_free);
+            gtk_box_pack_start(GTK_BOX(box), btn, FALSE, FALSE, 0);
+            g_free(base);
+        }
+    }
+    g_strfreev(recents);
+
+    return box;
+}
+
+static void welcome_show(AppState *app) {
+    if (app->welcome_page) return;
+    app->welcome_page = build_welcome_page(app);
+    GtkWidget *label = gtk_label_new(tr(STR_WELCOME_TAB));
+    gtk_notebook_append_page(app->editor_tabs, app->welcome_page, label);
+    gtk_widget_show_all(app->welcome_page);
+    gtk_notebook_set_current_page(app->editor_tabs, gtk_notebook_get_n_pages(app->editor_tabs) - 1);
+    update_title(app);
+}
+
+static void welcome_hide(AppState *app) {
+    if (!app->welcome_page) return;
+    gint n = gtk_notebook_get_n_pages(app->editor_tabs);
+    for (gint i = 0; i < n; i++) {
+        if (gtk_notebook_get_nth_page(app->editor_tabs, i) == app->welcome_page) {
+            gtk_notebook_remove_page(app->editor_tabs, i);
+            break;
+        }
+    }
+    app->welcome_page = NULL;
 }
 
 static void on_folder_opened(const char *folder, void *user_data) {
@@ -258,7 +395,7 @@ static void close_tab(AppState *app, EditorTab *tab) {
     g_free(tab);
 
     if (gtk_notebook_get_n_pages(app->editor_tabs) == 0) {
-        add_new_tab(app, NULL, "", TRUE);
+        welcome_show(app);   /* 마지막 탭을 닫으면 시작 화면으로 돌아간다 */
     } else {
         update_title(app);
     }
@@ -475,6 +612,9 @@ static void run_current_file(AppState *app) {
 /* ---------------- 메뉴 ---------------- */
 
 static void on_menu_new(GtkMenuItem *item, gpointer user_data) { (void)item; new_file((AppState *)user_data); }
+static void on_menu_open_file(GtkMenuItem *item, gpointer user_data) {
+    (void)item; open_file_dialog((AppState *)user_data);
+}
 static void on_menu_open_folder(GtkMenuItem *item, gpointer user_data) {
     (void)item; explorer_open_folder_dialog(((AppState *)user_data)->explorer);
 }
@@ -501,6 +641,40 @@ static gboolean on_delete_event(GtkWidget *widget, GdkEvent *event, gpointer use
     return FALSE;
 }
 
+/* ---------------- 최근 파일 하위 메뉴 ---------------- */
+
+static void on_recent_item_activated(GtkMenuItem *item, gpointer user_data) {
+    AppState *app = (AppState *)user_data;
+    const char *path = g_object_get_data(G_OBJECT(item), "path");
+    if (path) load_file_into_editor(path, app);
+}
+
+/* 하위 메뉴가 열릴 때마다 최신 목록으로 다시 채운다 */
+static void on_recent_menu_show(GtkWidget *submenu, gpointer user_data) {
+    GList *children = gtk_container_get_children(GTK_CONTAINER(submenu));
+    for (GList *l = children; l; l = l->next) gtk_widget_destroy(GTK_WIDGET(l->data));
+    g_list_free(children);
+
+    AppState *app = (AppState *)user_data;
+    char **recents = recent_get();
+    if (!recents || !recents[0]) {
+        GtkWidget *empty = gtk_menu_item_new_with_label(tr(STR_RECENT_EMPTY));
+        gtk_widget_set_sensitive(empty, FALSE);
+        gtk_menu_shell_append(GTK_MENU_SHELL(submenu), empty);
+    } else {
+        for (int i = 0; recents[i]; i++) {
+            char *base = g_path_get_basename(recents[i]);
+            GtkWidget *mi = gtk_menu_item_new_with_label(base);
+            g_object_set_data_full(G_OBJECT(mi), "path", g_strdup(recents[i]), g_free);
+            g_signal_connect(mi, "activate", G_CALLBACK(on_recent_item_activated), app);
+            gtk_menu_shell_append(GTK_MENU_SHELL(submenu), mi);
+            g_free(base);
+        }
+    }
+    g_strfreev(recents);
+    gtk_widget_show_all(submenu);
+}
+
 /* ---------------- 언어 전환 (한/영) ---------------- */
 
 static void rebuild_menu_bar(AppState *app);  /* 아래 build_menu_bar 와 함께 정의 */
@@ -521,6 +695,13 @@ static void on_language_changed(void *user_data) {
     }
     ai_panel_refresh_language(app->ai_panel);
     explorer_refresh_language(app->explorer);
+
+    /* 툴바 라벨과 시작 화면 문구도 새 언어로 */
+    toolbar_refresh_language(app);
+    if (app->welcome_page) {
+        welcome_hide(app);
+        welcome_show(app);
+    }
 }
 
 static void on_menu_lang_ko(GtkMenuItem *item, gpointer user_data) {
@@ -541,19 +722,30 @@ static GtkWidget *build_menu_bar(AppState *app) {
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(file_item), file_menu);
 
     GtkWidget *new_item = gtk_menu_item_new_with_label(tr(STR_MENU_NEW));
+    GtkWidget *open_file_item = gtk_menu_item_new_with_label(tr(STR_MENU_OPEN_FILE));
     GtkWidget *open_item = gtk_menu_item_new_with_label(tr(STR_MENU_OPEN_FOLDER));
     GtkWidget *save_item = gtk_menu_item_new_with_label(tr(STR_MENU_SAVE));
     GtkWidget *save_as_item = gtk_menu_item_new_with_label(tr(STR_MENU_SAVE_AS));
     GtkWidget *close_tab_item = gtk_menu_item_new_with_label(tr(STR_MENU_CLOSE_TAB));
     GtkWidget *quit_item = gtk_menu_item_new_with_label(tr(STR_MENU_QUIT));
+
+    /* 최근 파일 하위 메뉴 — 열릴 때마다(on_recent_menu_show) 최신 목록으로 채운다 */
+    GtkWidget *recent_menu = gtk_menu_new();
+    g_signal_connect(recent_menu, "show", G_CALLBACK(on_recent_menu_show), app);
+    GtkWidget *recent_item = gtk_menu_item_new_with_label(tr(STR_MENU_RECENT));
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(recent_item), recent_menu);
+
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu), new_item);
+    gtk_menu_shell_append(GTK_MENU_SHELL(file_menu), open_file_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu), open_item);
+    gtk_menu_shell_append(GTK_MENU_SHELL(file_menu), recent_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu), save_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu), save_as_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu), gtk_separator_menu_item_new());
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu), close_tab_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu), quit_item);
     g_signal_connect(new_item, "activate", G_CALLBACK(on_menu_new), app);
+    g_signal_connect(open_file_item, "activate", G_CALLBACK(on_menu_open_file), app);
     g_signal_connect(open_item, "activate", G_CALLBACK(on_menu_open_folder), app);
     g_signal_connect(save_item, "activate", G_CALLBACK(on_menu_save), app);
     g_signal_connect(save_as_item, "activate", G_CALLBACK(on_menu_save_as), app);
@@ -605,15 +797,66 @@ static void rebuild_menu_bar(AppState *app) {
     gtk_widget_show_all(app->menu_bar);
 }
 
+/* ---------------- 툴바 (메뉴 아래 아이콘 버튼줄) ---------------- */
+
+static void on_tb_new(GtkButton *btn, gpointer user_data) { (void)btn; new_file((AppState *)user_data); }
+static void on_tb_open_file(GtkButton *btn, gpointer user_data) { (void)btn; open_file_dialog((AppState *)user_data); }
+static void on_tb_open_folder(GtkButton *btn, gpointer user_data) {
+    (void)btn;
+    explorer_open_folder_dialog(((AppState *)user_data)->explorer);
+}
+static void on_tb_save(GtkButton *btn, gpointer user_data) { (void)btn; save_file((AppState *)user_data); }
+static void on_tb_run(GtkButton *btn, gpointer user_data) { (void)btn; run_current_file((AppState *)user_data); }
+
+static GtkWidget *make_tb_btn(AppState *app, const char *text, GCallback cb, GtkWidget **store) {
+    GtkWidget *btn = gtk_button_new_with_label(text);
+    gtk_style_context_add_class(gtk_widget_get_style_context(btn), "tb-btn");
+    gtk_widget_set_focus_on_click(btn, FALSE);
+    g_signal_connect(btn, "clicked", cb, app);
+    if (store) *store = btn;
+    return btn;
+}
+
+static GtkWidget *build_toolbar(AppState *app) {
+    GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+
+    gtk_box_pack_start(GTK_BOX(bar), make_tb_btn(app, tr(STR_TB_NEW), G_CALLBACK(on_tb_new), &app->tb_new), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bar), make_tb_btn(app, tr(STR_TB_OPEN_FILE), G_CALLBACK(on_tb_open_file), &app->tb_open_file), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bar), make_tb_btn(app, tr(STR_TB_OPEN_FOLDER), G_CALLBACK(on_tb_open_folder), &app->tb_open_folder), FALSE, FALSE, 0);
+
+    GtkWidget *sep = gtk_separator_new(GTK_ORIENTATION_VERTICAL);
+    gtk_widget_set_margin_start(sep, 4);
+    gtk_widget_set_margin_end(sep, 4);
+    gtk_box_pack_start(GTK_BOX(bar), sep, FALSE, FALSE, 0);
+
+    gtk_box_pack_start(GTK_BOX(bar), make_tb_btn(app, tr(STR_TB_SAVE), G_CALLBACK(on_tb_save), &app->tb_save), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bar), make_tb_btn(app, tr(STR_TB_RUN), G_CALLBACK(on_tb_run), &app->tb_run), FALSE, FALSE, 0);
+    return bar;
+}
+
+/* 언어 전환 시 툴바 라벨 일괄 갱신 */
+static void toolbar_refresh_language(AppState *app) {
+    gtk_button_set_label(GTK_BUTTON(app->tb_new), tr(STR_TB_NEW));
+    gtk_button_set_label(GTK_BUTTON(app->tb_open_file), tr(STR_TB_OPEN_FILE));
+    gtk_button_set_label(GTK_BUTTON(app->tb_open_folder), tr(STR_TB_OPEN_FOLDER));
+    gtk_button_set_label(GTK_BUTTON(app->tb_save), tr(STR_TB_SAVE));
+    gtk_button_set_label(GTK_BUTTON(app->tb_run), tr(STR_TB_RUN));
+}
+
 /* ---------------- 단축키 ---------------- */
 
 static gboolean on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer user_data) {
     (void)widget;
     AppState *app = (AppState *)user_data;
     gboolean ctrl = (event->state & GDK_CONTROL_MASK) != 0;
+    gboolean shift = (event->state & GDK_SHIFT_MASK) != 0;
 
     if (ctrl && event->keyval == GDK_KEY_n) { new_file(app); return TRUE; }
-    if (ctrl && event->keyval == GDK_KEY_o) { explorer_open_folder_dialog(app->explorer); return TRUE; }
+    if (ctrl && event->keyval == GDK_KEY_o) {
+        if (shift) explorer_open_folder_dialog(app->explorer);
+        else       open_file_dialog(app);
+        return TRUE;
+    }
     if (ctrl && event->keyval == GDK_KEY_s) { save_file(app); return TRUE; }
     if (ctrl && event->keyval == GDK_KEY_w) {
         EditorTab *tab = current_tab(app);
@@ -631,6 +874,7 @@ static gboolean on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer use
 
 int main(int argc, char **argv) {
     gtk_init(&argc, &argv);
+    theme_apply();   /* VS Code 스타일 다크 테마 — 위젯 만들기 전에 적용 */
     ui_lang_init();
 
     AppState *app = g_new0(AppState, 1);
@@ -648,6 +892,10 @@ int main(int argc, char **argv) {
     app->menu_bar = build_menu_bar(app);
     gtk_box_pack_start(GTK_BOX(root_box), app->menu_bar, FALSE, FALSE, 0);
 
+    /* 메뉴 바로 아래 툴바 — 자주 쓰는 동작을 한 번의 클릭으로 */
+    app->toolbar = build_toolbar(app);
+    gtk_box_pack_start(GTK_BOX(root_box), app->toolbar, FALSE, FALSE, 0);
+
     GtkWidget *paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
     gtk_box_pack_start(GTK_BOX(root_box), paned, TRUE, TRUE, 0);
 
@@ -661,6 +909,7 @@ int main(int argc, char **argv) {
 
     app->path_label = GTK_LABEL(gtk_label_new(tr(STR_NO_FILE_OPEN)));
     gtk_widget_set_halign(GTK_WIDGET(app->path_label), GTK_ALIGN_START);
+    gtk_style_context_add_class(gtk_widget_get_style_context(GTK_WIDGET(app->path_label)), "path-label");
     gtk_box_pack_start(GTK_BOX(center_box), GTK_WIDGET(app->path_label), FALSE, FALSE, 2);
 
     /* 노트북(OUTPUT/TERMINAL) — 파이썬 버전처럼 아래쪽에, 에디터 탭은 남은 공간 전체 */
@@ -703,8 +952,8 @@ int main(int argc, char **argv) {
     gtk_widget_set_size_request(app->ai_panel->box, 320, -1);
     gtk_paned_pack2(GTK_PANED(paned), inner_paned, TRUE, TRUE);
 
-    /* 시작할 때 빈 탭 하나를 열어둔다 */
-    add_new_tab(app, NULL, "", TRUE);
+    /* 시작할 때는 빈 탭 대신 시작 화면(웰컴 페이지)을 보여준다 */
+    welcome_show(app);
 
     gtk_widget_show_all(GTK_WIDGET(app->window));
     gtk_main();

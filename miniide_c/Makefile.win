@@ -7,7 +7,7 @@ CFLAGS = -Wall -Wextra -O2 $(shell pkg-config --cflags gtk+-3.0)
 LDFLAGS = $(shell pkg-config --libs gtk+-3.0) -lcurl -mwindows
 
 # Windows 는 VTE 대신 conpty_terminal.c 사용 (같은 terminal.h 인터페이스)
-SRCS = main.c editor.c explorer.c conpty_terminal.c ai_client.c ai_panel.c ui_lang.c
+SRCS = main.c editor.c explorer.c conpty_terminal.c ai_client.c ai_panel.c ui_lang.c theme.c recent.c
 OBJS = $(SRCS:.c=.win.o)
 TARGET = miniide.exe
 

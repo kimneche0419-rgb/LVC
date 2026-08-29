@@ -42,7 +42,8 @@ static const char *STRINGS[STR_COUNT][2] = {
     /* main.c — 메뉴 */
     [STR_MENU_FILE]        = {"파일", "File"},
     [STR_MENU_NEW]         = {"새 파일 (Ctrl+N)", "New File (Ctrl+N)"},
-    [STR_MENU_OPEN_FOLDER] = {"폴더 열기 (Ctrl+O)", "Open Folder (Ctrl+O)"},
+    [STR_MENU_OPEN_FILE]   = {"파일 열기 (Ctrl+O)", "Open File (Ctrl+O)"},
+    [STR_MENU_OPEN_FOLDER] = {"폴더 열기 (Ctrl+Shift+O)", "Open Folder (Ctrl+Shift+O)"},
     [STR_MENU_SAVE]        = {"파일 저장 (Ctrl+S)", "Save File (Ctrl+S)"},
     [STR_MENU_SAVE_AS]     = {"다른 이름으로 저장", "Save As"},
     [STR_MENU_CLOSE_TAB]   = {"탭 닫기 (Ctrl+W)", "Close Tab (Ctrl+W)"},
@@ -56,6 +57,29 @@ static const char *STRINGS[STR_COUNT][2] = {
     [STR_LANG_EN_LABEL]    = {"English", "English"},
     [STR_WINDOW_TITLE]     = {"Mini IDE (C) — 로컬 AI (Ollama)",
                               "Mini IDE (C) — Local AI (Ollama)"},
+
+    /* main.c — 툴바 (짧은 라벨) */
+    [STR_TB_NEW]         = {"＋ 새 파일", "＋ New"},
+    [STR_TB_OPEN_FILE]   = {"📄 파일 열기", "📄 Open File"},
+    [STR_TB_OPEN_FOLDER] = {"📂 폴더 열기", "📂 Open Folder"},
+    [STR_TB_SAVE]        = {"💾 저장", "💾 Save"},
+    [STR_TB_RUN]         = {"▶ 실행", "▶ Run"},
+
+    /* main.c — 파일 열기 대화상자 / 최근 파일 */
+    [STR_FILE_SELECT]      = {"파일 선택", "Select File"},
+    [STR_FILE_FILTER_NAME] = {"텍스트/코드 파일", "Text / code files"},
+    [STR_MENU_RECENT]   = {"최근 파일", "Recent Files"},
+    [STR_RECENT_EMPTY]  = {"(최근 파일 없음)", "(no recent files)"},
+
+    /* main.c — 시작 화면(웰컴 페이지) */
+    [STR_WELCOME_TAB]         = {"시작", "Start"},
+    [STR_WELCOME_TITLE]       = {"Mini IDE", "Mini IDE"},
+    [STR_WELCOME_SUB]         = {"아래에서 시작할 방법을 고르거나, 최근 파일을 열어보세요",
+                                 "Pick a way to start, or open a recent file"},
+    [STR_WELCOME_NEW]         = {"🆕  새 파일 만들기", "🆕  New File"},
+    [STR_WELCOME_OPEN_FILE]   = {"📄  파일 열기", "📄  Open File"},
+    [STR_WELCOME_OPEN_FOLDER] = {"📂  폴더 열기", "📂  Open Folder"},
+    [STR_WELCOME_RECENT]      = {"최근 파일", "Recent Files"},
 
     /* ai_panel.c */
     [STR_AI_HEADER]        = {" 🤖 AI Assistant (로컬)", " 🤖 AI Assistant (local)"},
