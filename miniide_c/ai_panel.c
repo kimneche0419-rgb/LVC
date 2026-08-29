@@ -3,7 +3,30 @@
 
 #include <string.h>
 
-#define MAX_HISTORY_MESSAGES 30
+/* 대화 기록을 서버로 보낼 때 포함할 최근 메시지 수 — 프롬프트가 짧을수록
+ * 첫 응답까지 빠르다(토큰 처리 비용 절약). 오래된 기록은 화면에만 남는다. */
+#define SEND_LAST_MESSAGES 6
+#define MAX_HISTORY_MESSAGES 12
+
+/* AI 역할 — 기능마다 다른 모델이 담당한다 (사용자 요청: 역할별 모델 분리).
+ * 각 역할은 후보 목록의 앞쪽부터 서버에 설치된 모델을 찾아 사용한다. */
+typedef enum {
+    AI_ROLE_LIGHT,   /* 일반 질문 — 가벼운 모델로 빠른 응답 */
+    AI_ROLE_CODE,    /* 코드 리뷰 / 버그 수정 — 코딩 특화 모델 */
+    AI_ROLE_PLAN     /* 계획 세우기 — 지시 이해가 좋은 일반 모델 */
+} AiRole;
+
+/* 후보 순서 = 우선순위. 없는 모델은 건너뛰고 다음 후보로 자동 선택된다. */
+static const char *LIGHT_MODELS[] = {"qwen2.5-coder:1.5b", "qwen2.5-coder:3b", NULL};
+static const char *CODE_MODELS[]  = {"qwen2.5-coder:3b", "qwen2.5-coder:1.5b", NULL};
+static const char *PLAN_MODELS[]  = {"qwen2.5:3b", "qwen2.5-coder:3b", "qwen2.5-coder:1.5b", NULL};
+
+/* 역할별 최대 출력 토큰 — 답변 길이를 제한해 완료 시간을 줄인다 */
+static const struct { AiRole role; int num_predict; } ROLE_OPTIONS[] = {
+    {AI_ROLE_LIGHT, 600},
+    {AI_ROLE_CODE,  1400},
+    {AI_ROLE_PLAN,  900},
+};
 
 typedef struct {
     char *role;
@@ -42,20 +65,63 @@ static void json_escape_append(GString *out, const char *s) {
     }
 }
 
-static char *build_request_json(AiPanel *panel) {
+static const char *role_model(AiPanel *panel, AiRole role) {
+    switch (role) {
+        case AI_ROLE_CODE:  return panel->model_code;
+        case AI_ROLE_PLAN:  return panel->model_plan;
+        default:            return panel->model_light;
+    }
+}
+
+static int role_num_predict(AiRole role) {
+    for (size_t i = 0; i < sizeof(ROLE_OPTIONS) / sizeof(ROLE_OPTIONS[0]); i++) {
+        if (ROLE_OPTIONS[i].role == role) return ROLE_OPTIONS[i].num_predict;
+    }
+    return 800;
+}
+
+/* 서버에 설치된 모델 목록에서 역할별 모델을 고른다 (첫 응답 속도와 품질 균형).
+ * 서버에 연결할 수 없으면 각 역할의 첫 후보로 초기화한다. */
+static void resolve_role_models(AiPanel *panel) {
+    char *tags = ai_client_tags_body(&panel->client);
+
+    const char *light = LIGHT_MODELS[0];
+    const char *code = CODE_MODELS[0];
+    const char *plan = PLAN_MODELS[0];
+    if (tags) {
+        for (int i = 0; LIGHT_MODELS[i]; i++)
+            if (ai_client_body_has_model(tags, LIGHT_MODELS[i])) { light = LIGHT_MODELS[i]; break; }
+        for (int i = 0; CODE_MODELS[i]; i++)
+            if (ai_client_body_has_model(tags, CODE_MODELS[i])) { code = CODE_MODELS[i]; break; }
+        for (int i = 0; PLAN_MODELS[i]; i++)
+            if (ai_client_body_has_model(tags, PLAN_MODELS[i])) { plan = PLAN_MODELS[i]; break; }
+        g_free(tags);
+    }
+    snprintf(panel->model_light, sizeof(panel->model_light), "%s", light);
+    snprintf(panel->model_code, sizeof(panel->model_code), "%s", code);
+    snprintf(panel->model_plan, sizeof(panel->model_plan), "%s", plan);
+}
+
+static char *build_request_json(AiPanel *panel, AiRole role) {
     GString *out = g_string_new("{\"model\":\"");
-    json_escape_append(out, panel->client.model);
+    json_escape_append(out, role_model(panel, role));
     g_string_append(out, "\",\"messages\":[");
-    for (guint i = 0; i < panel->messages->len; i++) {
+
+    /* 최근 SEND_LAST_MESSAGES 개만 보낸다 — 프롬프트가 짧아질수록 응답이 빨라진다 */
+    guint start = panel->messages->len > SEND_LAST_MESSAGES
+                  ? panel->messages->len - SEND_LAST_MESSAGES : 0;
+    for (guint i = start; i < panel->messages->len; i++) {
         ChatMessage *m = g_ptr_array_index(panel->messages, i);
-        if (i > 0) g_string_append_c(out, ',');
+        if (i > start) g_string_append_c(out, ',');
         g_string_append(out, "{\"role\":\"");
         json_escape_append(out, m->role);
         g_string_append(out, "\",\"content\":\"");
         json_escape_append(out, m->content);
         g_string_append(out, "\"}");
     }
-    g_string_append(out, "],\"stream\":true}");
+    /* num_predict: 역할별 최대 출력 토큰 — 답변이 알아서 간결해져 완료가 빨라진다 */
+    g_string_append_printf(out, "],\"stream\":true,\"options\":{\"num_predict\":%d}}",
+                           role_num_predict(role));
     return g_string_free(out, FALSE);
 }
 
@@ -135,7 +201,7 @@ static gboolean finalize_job_idle(gpointer data) {
     if (job->failed) {
         gtk_label_set_text(panel->status, tr(STR_AI_CONN_FAIL_SHORT));
     } else {
-        char *ok = trf(STR_AI_CONNECTED_FMT, panel->client.model);
+        char *ok = trf(STR_AI_MODELS_FMT, panel->model_light, panel->model_code, panel->model_plan);
         gtk_label_set_text(panel->status, ok);
         g_free(ok);
     }
@@ -159,7 +225,7 @@ static gpointer request_worker(gpointer data) {
     return NULL;
 }
 
-static void ask(AiPanel *panel, const char *query) {
+static void ask(AiPanel *panel, const char *query, AiRole role) {
     if (panel->is_requesting) return;
     if (!query || query[0] == '\0') return;
 
@@ -177,7 +243,7 @@ static void ask(AiPanel *panel, const char *query) {
 
     AiJob *job = g_new0(AiJob, 1);
     job->panel = panel;
-    job->messages_json = build_request_json(panel);
+    job->messages_json = build_request_json(panel, role);
     job->full_response = g_string_new("");
 
     GThread *thread = g_thread_new("ai-request", request_worker, job);
@@ -196,7 +262,7 @@ static void on_review_clicked(GtkButton *btn, gpointer user_data) {
         return;
     }
     char *prompt = trf(STR_PROMPT_REVIEW, code);
-    ask(panel, prompt);
+    ask(panel, prompt, AI_ROLE_CODE);
     g_free(prompt);
     g_free(code);
 }
@@ -211,7 +277,7 @@ static void on_fix_clicked(GtkButton *btn, gpointer user_data) {
         return;
     }
     char *prompt = trf(STR_PROMPT_FIX, code);
-    ask(panel, prompt);
+    ask(panel, prompt, AI_ROLE_CODE);
     g_free(prompt);
     g_free(code);
 }
@@ -237,7 +303,7 @@ static void on_plan_clicked(GtkButton *btn, gpointer user_data) {
         prompt = trf(STR_PROMPT_PLAN_CODE, code);
         g_free(code);
     }
-    ask(panel, prompt);
+    ask(panel, prompt, AI_ROLE_PLAN);
     g_free(prompt);
 }
 
@@ -269,7 +335,7 @@ static void on_entry_activate(GtkEntry *entry, gpointer user_data) {
     if (!text || text[0] == '\0') return;
     char *copy = g_strdup(text);
     gtk_entry_set_text(entry, "");
-    ask(panel, copy);
+    ask(panel, copy, AI_ROLE_LIGHT);  /* 자유 질문은 가벼운 모델로 빠르게 */
     g_free(copy);
 }
 
@@ -287,8 +353,9 @@ typedef struct {
 
 static gboolean server_check_idle(gpointer data) {
     ServerCheckResult *r = (ServerCheckResult *)data;
-    char *text = r->available ? trf(STR_AI_CONNECTED_FMT, r->panel->client.model)
-                              : (char *)tr(STR_AI_CONN_FAIL);
+    char *text = r->available
+        ? trf(STR_AI_MODELS_FMT, r->panel->model_light, r->panel->model_code, r->panel->model_plan)
+        : (char *)tr(STR_AI_CONN_FAIL);
     gtk_label_set_text(r->panel->status, text);
     if (r->available) g_free(text);
     g_free(r);
@@ -300,6 +367,8 @@ static gpointer server_check_worker(gpointer data) {
     ServerCheckResult *r = g_new0(ServerCheckResult, 1);
     r->panel = panel;
     r->available = ai_client_is_available(&panel->client);
+    /* 서버가 살아 있으면 설치된 모델 목록을 보고 역할별 모델을 확정한다 */
+    if (r->available) resolve_role_models(panel);
     g_idle_add(server_check_idle, r);
     return NULL;
 }
@@ -316,6 +385,8 @@ AiPanel *ai_panel_new(AiPanelGetCodeCb get_code, void *get_code_data,
     panel->messages = g_ptr_array_new();
     panel->last_bot_response = g_string_new("");
     ai_client_init(&panel->client, NULL, NULL);
+    /* 기본값으로 먼저 채워두고, 서버 확인이 끝나면 실제 설치된 모델로 교체된다 */
+    resolve_role_models(panel);
 
     panel->box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 

@@ -11,7 +11,6 @@ typedef void (*ExplorerFolderOpenedCb)(const char *folder, void *user_data);
 
 typedef struct {
     GtkWidget *box;           /* paned 에 붙일 최상위 위젯 */
-    GtkWidget *open_btn;      /* 언어 전환 시 문구를 다시 쓰기 위해 보관 */
     GtkTreeView *tree_view;
     GtkTreeStore *store;
     char *project_dir;

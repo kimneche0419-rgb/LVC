@@ -1,4 +1,4 @@
-/* Mini IDE (C 버전) 진입점 — 메뉴, 3분할 레이아웃, 여러 파일 탭, 코드 실행.
+/* Mini IDE (C 버전) 진입점 — 헤더바, 3분할 레이아웃, 여러 파일 탭, 코드 실행.
  * 파이썬 버전(miniide/app.py)의 MiniIDEApp 구조를 C+GTK로 이식.
  * 3번 기능: 여러 파일을 탭으로 동시에 열기.
  * Linux/Windows 양쪽에서 빌드된다 (프로세스 실행은 g_spawn 으로 공통화).
@@ -32,13 +32,13 @@ typedef struct {
 
 struct AppState {
     GtkWindow *window;
-    GtkLabel *path_label;
     GtkTextView *console;
     GtkNotebook *bottom_tabs;
     GtkNotebook *editor_tabs;   /* 3번 기능: 파일 탭 묶음 */
-    GtkWidget *menu_bar;        /* 언어 전환 시 통째로 다시 만들기 위해 보관 */
-    GtkWidget *toolbar;         /* 메뉴 아래 아이콘 버튼줄 (언어 전환 시 라벨 갱신) */
-    GtkWidget *tb_new, *tb_open_file, *tb_open_folder, *tb_save, *tb_run;
+    GtkHeaderBar *header_bar;   /* 상단을 한 줄로 통합 — 메뉴+버튼+제목 */
+    GtkMenuButton *menu_btn;    /* 헤더바 왼쪽 ☰ 메뉴 버튼 (언어 전환 시 팝업 재생성) */
+    GtkWidget *lang_btn;        /* 한/영 전환 버튼 — 라벨에 '전환될 언어'를 표시 */
+    GtkWidget *hb_new, *hb_open_file, *hb_open_folder, *hb_save, *hb_run;  /* 헤더바 아이콘 버튼 (언어 전환 시 툴팁 갱신) */
     GtkWidget *welcome_page;    /* 시작 화면 — 파일을 열면 사라지고 탭이 없으면 다시 나타난다 */
 
     Explorer *explorer;
@@ -50,7 +50,6 @@ struct AppState {
 static void welcome_show(AppState *app);
 static void welcome_hide(AppState *app);
 static void open_file_dialog(AppState *app);
-static void toolbar_refresh_language(AppState *app);
 
 static void close_tab_button_clicked(GtkButton *btn, gpointer user_data);
 static void add_new_tab(AppState *app, const char *path, const char *content, gboolean switch_to_it);
@@ -90,14 +89,15 @@ static void update_tab_label(EditorTab *tab) {
 
 static void update_title(AppState *app) {
     EditorTab *tab = current_tab(app);
+    /* 헤더바 제목 아래 작은 글씨(subtitle) 자리에 현재 파일 경로를 보여준다 */
     if (!tab) {
-        gtk_label_set_text(app->path_label, tr(STR_NO_FILE_OPEN));
+        gtk_header_bar_set_subtitle(app->header_bar, NULL);
         return;
     }
-    char text[1200];
     const char *name = tab->file_path ? tab->file_path : tr(STR_UNTITLED);
-    snprintf(text, sizeof(text), "  %s%s", name, tab->dirty ? " ●" : "");
-    gtk_label_set_text(app->path_label, text);
+    char text[1200];
+    snprintf(text, sizeof(text), "%s%s", name, tab->dirty ? " ●" : "");
+    gtk_header_bar_set_subtitle(app->header_bar, text);
 }
 
 static void log_console(AppState *app, const char *text, gboolean is_error) {
@@ -287,6 +287,7 @@ static void on_welcome_open_folder(GtkButton *btn, gpointer user_data) {
 /* 웰컴 페이지용 평평한 버튼 한 개 만들기 — 텍스트 왼쪽 정렬 */
 static GtkWidget *welcome_button(AppState *app, const char *text, GCallback cb) {
     GtkWidget *btn = gtk_button_new_with_label(text);
+    gtk_style_context_add_class(gtk_widget_get_style_context(btn), "flat-btn");
     gtk_widget_set_halign(btn, GTK_ALIGN_START);
     gtk_widget_set_focus_on_click(btn, FALSE);
     GtkWidget *child = gtk_bin_get_child(GTK_BIN(btn));
@@ -677,16 +678,18 @@ static void on_recent_menu_show(GtkWidget *submenu, gpointer user_data) {
 
 /* ---------------- 언어 전환 (한/영) ---------------- */
 
-static void rebuild_menu_bar(AppState *app);  /* 아래 build_menu_bar 와 함께 정의 */
+static void rebuild_header_menu(AppState *app);  /* 아래 build_header_menu 와 함께 정의 */
+static void headerbar_refresh_language(AppState *app);
 
 static void on_language_changed(void *user_data) {
     AppState *app = (AppState *)user_data;
 
-    /* 메뉴바를 새 언어로 다시 만든다 */
-    rebuild_menu_bar(app);
+    /* 헤더바 ☰ 메뉴를 새 언어로 다시 만든다 */
+    rebuild_header_menu(app);
+    headerbar_refresh_language(app);
 
     /* 나머지 정적 문구 일괄 갱신 */
-    gtk_window_set_title(app->window, tr(STR_WINDOW_TITLE));
+    gtk_header_bar_set_title(app->header_bar, tr(STR_WINDOW_TITLE));
     update_title(app);
     gint n = gtk_notebook_get_n_pages(app->editor_tabs);
     for (gint i = 0; i < n; i++) {
@@ -696,8 +699,7 @@ static void on_language_changed(void *user_data) {
     ai_panel_refresh_language(app->ai_panel);
     explorer_refresh_language(app->explorer);
 
-    /* 툴바 라벨과 시작 화면 문구도 새 언어로 */
-    toolbar_refresh_language(app);
+    /* 시작 화면 문구도 새 언어로 */
     if (app->welcome_page) {
         welcome_hide(app);
         welcome_show(app);
@@ -714,9 +716,12 @@ static void on_menu_lang_en(GtkMenuItem *item, gpointer user_data) {
     ui_lang_set(UI_LANG_EN);
 }
 
-static GtkWidget *build_menu_bar(AppState *app) {
-    GtkWidget *menu_bar = gtk_menu_bar_new();
+/* ☰ 메뉴 내용 — 파일/실행/보기 세 하위 메뉴를 한 세로 메뉴에 담는다.
+ * 헤더바의 메뉴 버튼 팝업으로 쓰인다 (예전 메뉴바를 대체). */
+static GtkWidget *build_header_menu(AppState *app) {
+    GtkWidget *menu = gtk_menu_new();
 
+    /* 파일 메뉴 */
     GtkWidget *file_menu = gtk_menu_new();
     GtkWidget *file_item = gtk_menu_item_new_with_label(tr(STR_MENU_FILE));
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(file_item), file_menu);
@@ -752,6 +757,7 @@ static GtkWidget *build_menu_bar(AppState *app) {
     g_signal_connect(close_tab_item, "activate", G_CALLBACK(on_menu_close_tab), app);
     g_signal_connect(quit_item, "activate", G_CALLBACK(on_menu_quit), app);
 
+    /* 실행 메뉴 */
     GtkWidget *run_menu = gtk_menu_new();
     GtkWidget *run_item = gtk_menu_item_new_with_label(tr(STR_MENU_RUN));
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(run_item), run_menu);
@@ -779,68 +785,101 @@ static GtkWidget *build_menu_bar(AppState *app) {
     g_signal_connect(en_item, "activate", G_CALLBACK(on_menu_lang_en), app);
     gtk_menu_shell_append(GTK_MENU_SHELL(view_menu), lang_item);
 
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu_bar), file_item);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu_bar), run_item);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu_bar), view_item);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), file_item);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), run_item);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), view_item);
 
-    return menu_bar;
+    gtk_widget_show_all(menu);
+    return menu;
 }
 
-/* 언어 전환 시 호출 — 기존 메뉴바를 치우고 같은 자리에 새로 만든다 */
-static void rebuild_menu_bar(AppState *app) {
-    GtkWidget *parent = gtk_widget_get_parent(app->menu_bar);
-    if (!parent) return;
-    gtk_widget_destroy(app->menu_bar);
-    app->menu_bar = build_menu_bar(app);
-    gtk_box_pack_start(GTK_BOX(parent), app->menu_bar, FALSE, FALSE, 0);
-    gtk_box_reorder_child(GTK_BOX(parent), app->menu_bar, 0);
-    gtk_widget_show_all(app->menu_bar);
+/* 언어 전환 시 호출 — 메뉴 버튼의 팝업을 새로 만들어 갈아끼운다 */
+static void rebuild_header_menu(AppState *app) {
+    GtkWidget *old = GTK_WIDGET(gtk_menu_button_get_popup(app->menu_btn));
+    GtkWidget *menu = build_header_menu(app);
+    gtk_menu_button_set_popup(app->menu_btn, menu);
+    if (old) gtk_widget_destroy(old);
 }
 
-/* ---------------- 툴바 (메뉴 아래 아이콘 버튼줄) ---------------- */
+/* ---------------- 헤더바 (상단을 한 줄로 통합) ---------------- */
 
-static void on_tb_new(GtkButton *btn, gpointer user_data) { (void)btn; new_file((AppState *)user_data); }
-static void on_tb_open_file(GtkButton *btn, gpointer user_data) { (void)btn; open_file_dialog((AppState *)user_data); }
-static void on_tb_open_folder(GtkButton *btn, gpointer user_data) {
+static void on_hb_new(GtkButton *btn, gpointer user_data) { (void)btn; new_file((AppState *)user_data); }
+static void on_hb_open_file(GtkButton *btn, gpointer user_data) { (void)btn; open_file_dialog((AppState *)user_data); }
+static void on_hb_open_folder(GtkButton *btn, gpointer user_data) {
     (void)btn;
     explorer_open_folder_dialog(((AppState *)user_data)->explorer);
 }
-static void on_tb_save(GtkButton *btn, gpointer user_data) { (void)btn; save_file((AppState *)user_data); }
-static void on_tb_run(GtkButton *btn, gpointer user_data) { (void)btn; run_current_file((AppState *)user_data); }
+static void on_hb_save(GtkButton *btn, gpointer user_data) { (void)btn; save_file((AppState *)user_data); }
+static void on_hb_run(GtkButton *btn, gpointer user_data) { (void)btn; run_current_file((AppState *)user_data); }
 
-static GtkWidget *make_tb_btn(AppState *app, const char *text, GCallback cb, GtkWidget **store) {
-    GtkWidget *btn = gtk_button_new_with_label(text);
-    gtk_style_context_add_class(gtk_widget_get_style_context(btn), "tb-btn");
+static void on_lang_btn_clicked(GtkButton *btn, gpointer user_data) {
+    (void)btn; (void)user_data;
+    ui_lang_toggle();  /* 바뀌면 on_language_changed 가 언어 버튼 라벨도 갱신한다 */
+}
+
+/* 아이콘만 있는 헤더바 버튼 한 개 — 툴팁으로 기능을 알려준다 */
+static GtkWidget *make_hb_btn(const char *icon_name, const char *tooltip, GCallback cb,
+                              AppState *app, GtkWidget **store) {
+    GtkWidget *btn = gtk_button_new_from_icon_name(icon_name, GTK_ICON_SIZE_BUTTON);
+    gtk_widget_set_tooltip_text(btn, tooltip);
+    gtk_style_context_add_class(gtk_widget_get_style_context(btn), "hb-btn");
     gtk_widget_set_focus_on_click(btn, FALSE);
     g_signal_connect(btn, "clicked", cb, app);
     if (store) *store = btn;
     return btn;
 }
 
-static GtkWidget *build_toolbar(AppState *app) {
-    GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+/* 언어 버튼 라벨 — '지금 누르면 바뀔 언어'를 보여준다 */
+static void lang_btn_refresh(AppState *app) {
+    const char *label = ui_lang_get() == UI_LANG_KO ? "EN" : "한";
+    gtk_button_set_label(GTK_BUTTON(app->lang_btn), label);
+    gtk_widget_set_tooltip_text(app->lang_btn, tr(STR_MENU_LANGUAGE));
+}
 
-    gtk_box_pack_start(GTK_BOX(bar), make_tb_btn(app, tr(STR_TB_NEW), G_CALLBACK(on_tb_new), &app->tb_new), FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(bar), make_tb_btn(app, tr(STR_TB_OPEN_FILE), G_CALLBACK(on_tb_open_file), &app->tb_open_file), FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(bar), make_tb_btn(app, tr(STR_TB_OPEN_FOLDER), G_CALLBACK(on_tb_open_folder), &app->tb_open_folder), FALSE, FALSE, 0);
+static GtkHeaderBar *build_header_bar(AppState *app) {
+    GtkHeaderBar *bar = GTK_HEADER_BAR(gtk_header_bar_new());
+    gtk_header_bar_set_show_close_button(bar, TRUE);
+    gtk_header_bar_set_title(bar, tr(STR_WINDOW_TITLE));
 
-    GtkWidget *sep = gtk_separator_new(GTK_ORIENTATION_VERTICAL);
-    gtk_widget_set_margin_start(sep, 4);
-    gtk_widget_set_margin_end(sep, 4);
-    gtk_box_pack_start(GTK_BOX(bar), sep, FALSE, FALSE, 0);
+    /* 왼쪽: ☰ 메뉴 + 새 파일/파일 열기/폴더 열기 */
+    app->menu_btn = GTK_MENU_BUTTON(gtk_menu_button_new());
+    gtk_menu_button_set_direction(app->menu_btn, GTK_ARROW_DOWN);
+    GtkWidget *menu_icon = gtk_image_new_from_icon_name("open-menu", GTK_ICON_SIZE_BUTTON);
+    gtk_button_set_image(GTK_BUTTON(app->menu_btn), menu_icon);
+    gtk_menu_button_set_popup(app->menu_btn, build_header_menu(app));
+    gtk_header_bar_pack_start(bar, GTK_WIDGET(app->menu_btn));
 
-    gtk_box_pack_start(GTK_BOX(bar), make_tb_btn(app, tr(STR_TB_SAVE), G_CALLBACK(on_tb_save), &app->tb_save), FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(bar), make_tb_btn(app, tr(STR_TB_RUN), G_CALLBACK(on_tb_run), &app->tb_run), FALSE, FALSE, 0);
+    gtk_header_bar_pack_start(bar, make_hb_btn("document-new", tr(STR_MENU_NEW), G_CALLBACK(on_hb_new), app, &app->hb_new));
+    gtk_header_bar_pack_start(bar, make_hb_btn("document-open", tr(STR_MENU_OPEN_FILE), G_CALLBACK(on_hb_open_file), app, &app->hb_open_file));
+    gtk_header_bar_pack_start(bar, make_hb_btn("folder-open", tr(STR_MENU_OPEN_FOLDER), G_CALLBACK(on_hb_open_folder), app, &app->hb_open_folder));
+
+    /* 오른쪽: 언어 전환 + 저장 + 실행(강조색). pack_end 은 먼저 넣은 것이 더 오른쪽에 붙는다 */
+    app->lang_btn = gtk_button_new_with_label("EN");
+    gtk_style_context_add_class(gtk_widget_get_style_context(app->lang_btn), "hb-btn");
+    gtk_widget_set_focus_on_click(app->lang_btn, FALSE);
+    g_signal_connect(app->lang_btn, "clicked", G_CALLBACK(on_lang_btn_clicked), app);
+    gtk_header_bar_pack_end(bar, app->lang_btn);
+
+    gtk_header_bar_pack_end(bar, make_hb_btn("document-save", tr(STR_MENU_SAVE), G_CALLBACK(on_hb_save), app, &app->hb_save));
+
+    GtkWidget *run_btn = make_hb_btn("media-playback-start", tr(STR_MENU_RUN_FILE), G_CALLBACK(on_hb_run), app, &app->hb_run);
+    gtk_style_context_add_class(gtk_widget_get_style_context(run_btn), "accent-btn");
+    gtk_header_bar_pack_end(bar, run_btn);
+
+    lang_btn_refresh(app);
     return bar;
 }
 
-/* 언어 전환 시 툴바 라벨 일괄 갱신 */
-static void toolbar_refresh_language(AppState *app) {
-    gtk_button_set_label(GTK_BUTTON(app->tb_new), tr(STR_TB_NEW));
-    gtk_button_set_label(GTK_BUTTON(app->tb_open_file), tr(STR_TB_OPEN_FILE));
-    gtk_button_set_label(GTK_BUTTON(app->tb_open_folder), tr(STR_TB_OPEN_FOLDER));
-    gtk_button_set_label(GTK_BUTTON(app->tb_save), tr(STR_TB_SAVE));
-    gtk_button_set_label(GTK_BUTTON(app->tb_run), tr(STR_TB_RUN));
+/* 언어 전환 시 헤더바 버튼 툴팁 갱신 */
+static void headerbar_refresh_language(AppState *app) {
+    gtk_widget_set_tooltip_text(app->hb_new, tr(STR_MENU_NEW));
+    gtk_widget_set_tooltip_text(app->hb_open_file, tr(STR_MENU_OPEN_FILE));
+    gtk_widget_set_tooltip_text(app->hb_open_folder, tr(STR_MENU_OPEN_FOLDER));
+    gtk_widget_set_tooltip_text(app->hb_save, tr(STR_MENU_SAVE));
+    gtk_widget_set_tooltip_text(app->hb_run, tr(STR_MENU_RUN_FILE));
+    lang_btn_refresh(app);
 }
 
 /* ---------------- 단축키 ---------------- */
@@ -886,15 +925,12 @@ int main(int argc, char **argv) {
     g_signal_connect(app->window, "delete-event", G_CALLBACK(on_delete_event), NULL);
     g_signal_connect(app->window, "key-press-event", G_CALLBACK(on_key_press), app);
 
+    /* 상단을 헤더바 하나로 통합 — ☰ 메뉴 + 아이콘 버튼 + 제목/파일경로 */
+    app->header_bar = build_header_bar(app);
+    gtk_window_set_titlebar(app->window, GTK_WIDGET(app->header_bar));
+
     GtkWidget *root_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_container_add(GTK_CONTAINER(app->window), root_box);
-
-    app->menu_bar = build_menu_bar(app);
-    gtk_box_pack_start(GTK_BOX(root_box), app->menu_bar, FALSE, FALSE, 0);
-
-    /* 메뉴 바로 아래 툴바 — 자주 쓰는 동작을 한 번의 클릭으로 */
-    app->toolbar = build_toolbar(app);
-    gtk_box_pack_start(GTK_BOX(root_box), app->toolbar, FALSE, FALSE, 0);
 
     GtkWidget *paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
     gtk_box_pack_start(GTK_BOX(root_box), paned, TRUE, TRUE, 0);
@@ -904,13 +940,8 @@ int main(int argc, char **argv) {
     gtk_paned_pack1(GTK_PANED(paned), app->explorer->box, FALSE, TRUE);
     gtk_widget_set_size_request(app->explorer->box, 180, -1);
 
-    /* [중앙] 경로표시줄 + 파일 탭 + 하단(OUTPUT/TERMINAL) */
+    /* [중앙] 파일 탭 + 하단(OUTPUT/TERMINAL) — 현재 파일 경로는 헤더바 subtitle 에 표시 */
     GtkWidget *center_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-
-    app->path_label = GTK_LABEL(gtk_label_new(tr(STR_NO_FILE_OPEN)));
-    gtk_widget_set_halign(GTK_WIDGET(app->path_label), GTK_ALIGN_START);
-    gtk_style_context_add_class(gtk_widget_get_style_context(GTK_WIDGET(app->path_label)), "path-label");
-    gtk_box_pack_start(GTK_BOX(center_box), GTK_WIDGET(app->path_label), FALSE, FALSE, 2);
 
     /* 노트북(OUTPUT/TERMINAL) — 파이썬 버전처럼 아래쪽에, 에디터 탭은 남은 공간 전체 */
     GtkWidget *paned_v = gtk_paned_new(GTK_ORIENTATION_VERTICAL);

@@ -1,6 +1,7 @@
 #include "ai_client.h"
 
 #include <curl/curl.h>
+#include <glib.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -128,23 +129,57 @@ void ai_client_init(AiClient *client, const char *base_url, const char *model) {
 }
 
 int ai_client_is_available(AiClient *client) {
+    char *body = ai_client_tags_body(client);
+    if (!body) return 0;
+    g_free(body);
+    return 1;
+}
+
+/* /api/tags 본문을 그대로 모으기만 하는 콜백용 상태 */
+typedef struct {
+    GString *body;
+} TagsFetchState;
+
+static size_t tags_write_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
+    TagsFetchState *s = (TagsFetchState *)userdata;
+    g_string_append_len(s->body, ptr, size * nmemb);
+    return size * nmemb;
+}
+
+char *ai_client_tags_body(AiClient *client) {
     CURL *curl = curl_easy_init();
-    if (!curl) return 0;
+    if (!curl) return NULL;
 
     char url[AI_MAX_URL_LEN + 32];
     snprintf(url, sizeof(url), "%s/api/tags", client->base_url);
 
+    TagsFetchState state = {0};
+    state.body = g_string_new("");
+
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 3L);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, NULL);
-    curl_easy_setopt(curl, CURLOPT_NOBODY, 0L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, tags_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &state);
 
     CURLcode res = curl_easy_perform(curl);
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
     curl_easy_cleanup(curl);
 
-    return (res == CURLE_OK && status == 200) ? 1 : 0;
+    if (res != CURLE_OK || status != 200) {
+        g_string_free(state.body, TRUE);
+        return NULL;
+    }
+    return g_string_free(state.body, FALSE);
+}
+
+int ai_client_body_has_model(const char *tags_body, const char *model) {
+    if (!tags_body || !model) return 0;
+    /* /api/tags 응답의 각 항목은 "name":"qwen2.5-coder:3b" 형태 —
+     * JSON 파서 없이 해당 패턴이 있는지만 확인한다. */
+    char needle[96];
+    snprintf(needle, sizeof(needle), "\"name\":\"%s\"", model);
+    return strstr(tags_body, needle) != NULL ? 1 : 0;
 }
 
 int ai_client_chat_stream(AiClient *client, const char *messages_json,

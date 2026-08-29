@@ -11,19 +11,26 @@ static const char *DARK_CSS =
     "window, dialog { background-color: #252526; color: #d4d4d4; }"
     "label { color: #d4d4d4; }"
 
-    /* 메뉴바 / 메뉴 */
-    "menubar, menu { background-color: #2d2d2d; color: #d4d4d4; }"
-    "menubar menuitem, menu menuitem { padding: 3px 8px; }"
-    "menubar menuitem:hover, menu menuitem:hover { background-color: #0e639c; color: #ffffff; }"
+    /* 헤더바 — 상단을 한 줄로 통합한 바 */
+    "headerbar { background-color: #2d2d2d; border-bottom: 1px solid #1b1b1c; min-height: 44px; }"
+    "headerbar:titlebar label { color: #d4d4d4; }"
+
+    /* 헤더바 아이콘 버튼 — 테두리 없는 플랫 스타일 */
+    ".hb-btn { background-color: transparent; color: #d4d4d4; border: none;"
+    "          padding: 5px; border-radius: 4px; }"
+    ".hb-btn:hover { background-color: #3c3c3c; }"
+    ".hb-btn:active { background-color: #0e639c; color: #ffffff; }"
+    /* 실행(▶) 버튼 — 강조색 */
+    ".accent-btn, button.accent-btn { background-color: #0e639c; color: #ffffff; border: none;"
+    "                                  padding: 5px; border-radius: 4px; }"
+    ".accent-btn:hover { background-color: #1177bb; }"
+
+    /* ☰ 팝업 메뉴 */
+    "menu { background-color: #2d2d2d; color: #d4d4d4; }"
+    "menu menuitem { padding: 4px 10px; }"
+    "menu menuitem:hover { background-color: #0e639c; color: #ffffff; }"
     "separator { background-color: #3c3c3c; }"
     "menu separator { background-color: #454545; }"
-
-    /* 툴바와 툴바 버튼(평평한 아이콘 버튼) */
-    "toolbar { background-color: #2d2d2d; padding: 3px; }"
-    ".tb-btn { background-color: transparent; color: #d4d4d4; border: none;"
-    "          padding: 4px 9px; border-radius: 4px; }"
-    ".tb-btn:hover { background-color: #3c3c3c; }"
-    ".tb-btn:active { background-color: #0e639c; color: #ffffff; }"
 
     /* 일반 버튼 (대화상자 등) */
     "button { background-color: #3a3d41; color: #d4d4d4;"
@@ -32,10 +39,17 @@ static const char *DARK_CSS =
     "button:active { background-color: #0e639c; color: #ffffff; border-color: #0e639c; }"
     "button:disabled { color: #6a6a6a; }"
 
-    /* 노트북(탭 묶음) — 활성 탭은 밝게, 비활성은 어둡게 */
-    "notebook header { background-color: #2d2d2d; border-bottom: 1px solid #1b1b1c; }"
-    "notebook header tabs { background-color: #2d2d2d; }"
-    "notebook tab { background-color: #2d2d2d; padding: 3px 8px; }"
+    /* 시작 화면/기타 평평한 텍스트 버튼 */
+    ".flat-btn { background-color: transparent; color: #d4d4d4; border: none;"
+    "            padding: 6px 10px; border-radius: 4px; }"
+    ".flat-btn:hover { background-color: #3c3c3c; }"
+    ".flat-btn:active { background-color: #094771; }"
+
+    /* 노트북(탭 묶음) — 활성 탭은 밝게, 윗모서리 둥글게 */
+    "notebook header { background-color: #252526; border-bottom: 1px solid #1b1b1c; }"
+    "notebook header tabs { background-color: #252526; }"
+    "notebook tab { background-color: #252526; padding: 3px 9px;"
+    "               border-radius: 6px 6px 0 0; margin: 3px 1px 0 1px; }"
     "notebook tab:checked { background-color: #1e1e1e; }"
     "notebook tab label { color: #9d9d9d; padding: 0 4px; }"
     "notebook tab:checked label { color: #ffffff; }"
@@ -61,12 +75,7 @@ static const char *DARK_CSS =
     /* 시작 화면(웰컴 페이지) — 큰 제목/링크용 */
     ".welcome-title { color: #ffffff; font-size: 26px; font-weight: bold; opacity: 0.95; }"
     ".welcome-sub { color: #9d9d9d; font-size: 13px; }"
-    ".welcome-link { color: #4db7ff; font-size: 14px; }"
-    ".welcome-link:hover { text-decoration: underline; }"
-    ".welcome-section { color: #cccccc; font-size: 13px; font-weight: bold; }"
-
-    /* 경로 표시줄 */
-    ".path-label { color: #9d9d9d; font-size: 12px; }";
+    ".welcome-section { color: #cccccc; font-size: 13px; font-weight: bold; }";
 
 void theme_apply(void) {
     /* GTK 자체 테마에도 다크 선호를 알려 메뉴/대화상자의 기본 위젯이 어둡게 그려지게 한다 */

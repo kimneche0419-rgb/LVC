@@ -85,6 +85,8 @@ static const char *STRINGS[STR_COUNT][2] = {
     [STR_AI_HEADER]        = {" 🤖 AI Assistant (로컬)", " 🤖 AI Assistant (local)"},
     [STR_AI_CONNECTING]    = {"연결 확인 중...", "Checking connection..."},
     [STR_AI_CONNECTED_FMT] = {"✅ Ollama 연결됨 (%s)", "✅ Ollama connected (%s)"},
+    [STR_AI_MODELS_FMT]    = {"✅ Ollama — 질문 %s · 코딩 %s · 기획 %s",
+                              "✅ Ollama — chat %s · code %s · plan %s"},
     [STR_AI_CONN_FAIL]     = {"⚠ Ollama 서버에 연결할 수 없음 — 'ollama serve' 실행 필요",
                               "⚠ Cannot reach the Ollama server — run 'ollama serve' first"},
     [STR_AI_CONN_FAIL_SHORT] = {"⚠ Ollama 연결 실패", "⚠ Ollama connection failed"},

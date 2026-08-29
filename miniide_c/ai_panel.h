@@ -30,6 +30,11 @@ typedef struct {
     GString *last_bot_response;
     gboolean is_requesting;
 
+    /* 역할별 모델 — 시작 시 서버에 설치된 모델을 확인해 자동으로 고른다 */
+    char model_light[AI_MAX_MODEL_LEN];  /* 일반 질문: 가장 가벼운 모델 */
+    char model_code[AI_MAX_MODEL_LEN];   /* 코드 리뷰/버그 수정: 코딩 모델 */
+    char model_plan[AI_MAX_MODEL_LEN];   /* 계획 세우기: 기획(지시) 모델 */
+
     AiPanelGetCodeCb get_code;
     void *get_code_data;
     AiPanelApplyCodeCb apply_code;

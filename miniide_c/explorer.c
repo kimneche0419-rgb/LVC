@@ -68,13 +68,10 @@ static void populate_dir(Explorer *explorer, GtkTreeIter *parent, const char *pa
         char *full_path = g_build_filename(path, n, NULL);
         gboolean is_dir = GPOINTER_TO_INT(g_hash_table_lookup(is_dir_map, n)) != 0;
 
-        char display[600];
-        snprintf(display, sizeof(display), "%s %s", is_dir ? "\xf0\x9f\x93\x81" : "\xf0\x9f\x93\x84", n);
-
         GtkTreeIter node;
         gtk_tree_store_append(explorer->store, &node, parent);
         gtk_tree_store_set(explorer->store, &node,
-                            COL_NAME, display, COL_PATH, full_path, COL_IS_DIR, is_dir, -1);
+                            COL_NAME, n, COL_PATH, full_path, COL_IS_DIR, is_dir, -1);
         if (is_dir) {
             /* 더미 자식 하나를 넣어 확장 화살표가 보이도록 하고, 실제 확장 시 로드 */
             GtkTreeIter dummy;
@@ -133,14 +130,12 @@ void explorer_open_folder_dialog(Explorer *explorer) {
         explorer->project_dir = g_strdup(folder);
 
         gtk_tree_store_clear(explorer->store);
-        char display[300];
         char *base = g_path_get_basename(folder);
-        snprintf(display, sizeof(display), "\xf0\x9f\x93\x81 %s", base);
-        g_free(base);
 
         GtkTreeIter root;
         gtk_tree_store_append(explorer->store, &root, NULL);
-        gtk_tree_store_set(explorer->store, &root, COL_NAME, display, COL_PATH, folder, COL_IS_DIR, TRUE, -1);
+        gtk_tree_store_set(explorer->store, &root, COL_NAME, base, COL_PATH, folder, COL_IS_DIR, TRUE, -1);
+        g_free(base);
         populate_dir(explorer, &root, folder);
 
         GtkTreePath *tree_path = gtk_tree_model_get_path(GTK_TREE_MODEL(explorer->store), &root);
@@ -155,11 +150,6 @@ void explorer_open_folder_dialog(Explorer *explorer) {
     gtk_widget_destroy(dialog);
 }
 
-static void on_open_folder_clicked(GtkButton *button, gpointer user_data) {
-    (void)button;
-    explorer_open_folder_dialog((Explorer *)user_data);
-}
-
 Explorer *explorer_new(GtkWindow *parent_window,
                         ExplorerOpenFileCb on_open_file, void *on_open_file_data,
                         ExplorerFolderOpenedCb on_folder_opened, void *on_folder_opened_data) {
@@ -170,11 +160,8 @@ Explorer *explorer_new(GtkWindow *parent_window,
     explorer->on_folder_opened = on_folder_opened;
     explorer->on_folder_opened_data = on_folder_opened_data;
 
+    /* 사이드바에는 트리만 — 폴더 열기는 헤더바 버튼/Ctrl+Shift+O 가 담당한다 */
     explorer->box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-
-    explorer->open_btn = gtk_button_new_with_label(tr(STR_BTN_OPEN_FOLDER));
-    gtk_box_pack_start(GTK_BOX(explorer->box), explorer->open_btn, FALSE, FALSE, 4);
-    g_signal_connect(explorer->open_btn, "clicked", G_CALLBACK(on_open_folder_clicked), explorer);
 
     explorer->store = gtk_tree_store_new(N_COLS, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_BOOLEAN);
     explorer->tree_view = GTK_TREE_VIEW(gtk_tree_view_new_with_model(GTK_TREE_MODEL(explorer->store)));
@@ -195,5 +182,6 @@ Explorer *explorer_new(GtkWindow *parent_window,
 }
 
 void explorer_refresh_language(Explorer *explorer) {
-    gtk_button_set_label(GTK_BUTTON(explorer->open_btn), tr(STR_BTN_OPEN_FOLDER));
+    /* 사이드바에는 트리만 있고 정적 문구가 없다 — 갱신할 것이 없다 */
+    (void)explorer;
 }
