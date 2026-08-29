@@ -18,6 +18,13 @@ typedef struct {
     GtkLabel *status;
     GtkButton *send_btn;
 
+    /* 언어 전환 시 문구를 다시 쓰기 위해 보관하는 위젯들 */
+    GtkWidget *header;
+    GtkButton *review_btn;
+    GtkButton *fix_btn;
+    GtkButton *plan_btn;
+    GtkButton *apply_btn;
+
     AiClient client;
     GPtrArray *messages;     /* ChatMessage* 배열 — Ollama 로 보낼 대화 기록 */
     GString *last_bot_response;
@@ -31,5 +38,8 @@ typedef struct {
 
 AiPanel *ai_panel_new(AiPanelGetCodeCb get_code, void *get_code_data,
                        AiPanelApplyCodeCb apply_code, void *apply_code_data);
+
+/* 언어 전환 시 정적 문구(제목/버튼)를 현재 언어로 다시 쓰고 상태를 재확인한다 */
+void ai_panel_refresh_language(AiPanel *panel);
 
 #endif

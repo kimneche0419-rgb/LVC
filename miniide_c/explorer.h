@@ -11,6 +11,7 @@ typedef void (*ExplorerFolderOpenedCb)(const char *folder, void *user_data);
 
 typedef struct {
     GtkWidget *box;           /* paned 에 붙일 최상위 위젯 */
+    GtkWidget *open_btn;      /* 언어 전환 시 문구를 다시 쓰기 위해 보관 */
     GtkTreeView *tree_view;
     GtkTreeStore *store;
     char *project_dir;
@@ -27,5 +28,8 @@ Explorer *explorer_new(GtkWindow *parent_window,
 
 /* "폴더 열기" 버튼과 동일한 동작을 코드에서 직접 호출할 때 사용 */
 void explorer_open_folder_dialog(Explorer *explorer);
+
+/* 언어 전환 시 버튼 문구를 현재 언어로 다시 쓴다 */
+void explorer_refresh_language(Explorer *explorer);
 
 #endif

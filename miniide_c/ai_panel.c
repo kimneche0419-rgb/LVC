@@ -1,4 +1,5 @@
 #include "ai_panel.h"
+#include "ui_lang.h"
 
 #include <string.h>
 
@@ -120,11 +121,9 @@ static gboolean finalize_job_idle(gpointer data) {
     AiPanel *panel = job->panel;
 
     if (job->failed) {
-        char msg[512];
-        snprintf(msg, sizeof(msg),
-                 "[오류] %s\nWSL 에서 Ollama 서버가 실행 중인지 확인해주세요 (ollama serve).\n\n",
-                 job->error);
+        char *msg = trf(STR_AI_ERROR_FMT, job->error);
         append_display(panel, "error_text", msg);
+        g_free(msg);
     } else {
         g_string_assign(panel->last_bot_response, job->full_response->str);
         push_message(panel, "assistant", job->full_response->str);
@@ -133,8 +132,13 @@ static gboolean finalize_job_idle(gpointer data) {
 
     panel->is_requesting = FALSE;
     gtk_widget_set_sensitive(GTK_WIDGET(panel->send_btn), TRUE);
-    gtk_label_set_text(panel->status,
-                        job->failed ? "⚠ Ollama 연결 실패" : "✅ Ollama 연결됨");
+    if (job->failed) {
+        gtk_label_set_text(panel->status, tr(STR_AI_CONN_FAIL_SHORT));
+    } else {
+        char *ok = trf(STR_AI_CONNECTED_FMT, panel->client.model);
+        gtk_label_set_text(panel->status, ok);
+        g_free(ok);
+    }
 
     g_string_free(job->full_response, TRUE);
     g_free(job->messages_json);
@@ -161,13 +165,13 @@ static void ask(AiPanel *panel, const char *query) {
 
     panel->is_requesting = TRUE;
     gtk_widget_set_sensitive(GTK_WIDGET(panel->send_btn), FALSE);
-    gtk_label_set_text(panel->status, "⚡ 생성 중... (로컬 모델은 느릴 수 있어요)");
+    gtk_label_set_text(panel->status, tr(STR_AI_BUSY));
 
-    append_display(panel, "user_tag", "🙋 You\n");
+    append_display(panel, "user_tag", tr(STR_AI_USER_TAG));
     char with_nl[8200];
     snprintf(with_nl, sizeof(with_nl), "%s\n\n", query);
     append_display(panel, "user_text", with_nl);
-    append_display(panel, "bot_tag", "🤖 응답\n");
+    append_display(panel, "bot_tag", tr(STR_AI_BOT_TAG));
 
     push_message(panel, "user", query);
 
@@ -187,11 +191,11 @@ static void on_review_clicked(GtkButton *btn, gpointer user_data) {
     AiPanel *panel = (AiPanel *)user_data;
     char *code = panel->get_code ? panel->get_code(panel->get_code_data) : NULL;
     if (!code || code[0] == '\0') {
-        append_display(panel, "system_text", "[안내] 에디터에 코드가 없습니다.\n\n");
+        append_display(panel, "system_text", tr(STR_AI_NO_CODE));
         g_free(code);
         return;
     }
-    char *prompt = g_strdup_printf("다음 코드를 리뷰하고 개선할 점을 알려줘:\n```\n%s\n```", code);
+    char *prompt = trf(STR_PROMPT_REVIEW, code);
     ask(panel, prompt);
     g_free(prompt);
     g_free(code);
@@ -202,11 +206,11 @@ static void on_fix_clicked(GtkButton *btn, gpointer user_data) {
     AiPanel *panel = (AiPanel *)user_data;
     char *code = panel->get_code ? panel->get_code(panel->get_code_data) : NULL;
     if (!code || code[0] == '\0') {
-        append_display(panel, "system_text", "[안내] 에디터에 코드가 없습니다.\n\n");
+        append_display(panel, "system_text", tr(STR_AI_NO_CODE));
         g_free(code);
         return;
     }
-    char *prompt = g_strdup_printf("다음 코드에서 버그를 찾아 수정해줘:\n```\n%s\n```", code);
+    char *prompt = trf(STR_PROMPT_FIX, code);
     ask(panel, prompt);
     g_free(prompt);
     g_free(code);
@@ -221,22 +225,16 @@ static void on_plan_clicked(GtkButton *btn, gpointer user_data) {
 
     char *prompt;
     if (typed && typed[0] != '\0') {
-        prompt = g_strdup_printf(
-            "다음 요청을 구현하기 위한 단계별 계획을 세워줘 (코드는 아직 작성하지 말고 계획만): %s",
-            typed);
+        prompt = trf(STR_PROMPT_PLAN_TYPED, typed);
         gtk_entry_set_text(panel->entry, "");
     } else {
         char *code = panel->get_code ? panel->get_code(panel->get_code_data) : NULL;
         if (!code || code[0] == '\0') {
-            append_display(panel, "system_text",
-                            "[안내] 계획을 세우려면 무엇을 만들지 입력창에 적거나, "
-                            "에디터에 코드를 먼저 열어주세요.\n\n");
+            append_display(panel, "system_text", tr(STR_AI_PLAN_HINT));
             g_free(code);
             return;
         }
-        prompt = g_strdup_printf(
-            "다음 코드를 개선하기 위한 단계별 계획을 세워줘 (코드는 아직 작성하지 말고 계획만):\n```\n%s\n```",
-            code);
+        prompt = trf(STR_PROMPT_PLAN_CODE, code);
         g_free(code);
     }
     ask(panel, prompt);
@@ -247,15 +245,14 @@ static void on_apply_clicked(GtkButton *btn, gpointer user_data) {
     (void)btn;
     AiPanel *panel = (AiPanel *)user_data;
     if (panel->last_bot_response->len == 0) {
-        append_display(panel, "system_text", "[안내] 적용할 AI 답변이 없습니다. 먼저 질문해보세요.\n\n");
+        append_display(panel, "system_text", tr(STR_AI_NO_ANSWER));
         return;
     }
     if (!panel->apply_code) return;
 
     GtkWidget *dialog = gtk_message_dialog_new(
         NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION, GTK_BUTTONS_YES_NO,
-        "AI가 제안한 코드로 현재 에디터 내용을 덮어씁니다.\n"
-        "저장하지 않은 원래 내용은 사라집니다. 계속할까요?");
+        "%s", tr(STR_AI_APPLY_CONFIRM));
     int response = gtk_dialog_run(GTK_DIALOG(dialog));
     gtk_widget_destroy(dialog);
     if (response != GTK_RESPONSE_YES) return;
@@ -263,7 +260,7 @@ static void on_apply_clicked(GtkButton *btn, gpointer user_data) {
     char *code = extract_code_block(panel->last_bot_response->str);
     panel->apply_code(code, panel->apply_code_data);
     g_free(code);
-    append_display(panel, "system_text", "[안내] AI 코드가 에디터에 적용되었습니다.\n\n");
+    append_display(panel, "system_text", tr(STR_AI_APPLIED_NOTICE));
 }
 
 static void on_entry_activate(GtkEntry *entry, gpointer user_data) {
@@ -290,13 +287,10 @@ typedef struct {
 
 static gboolean server_check_idle(gpointer data) {
     ServerCheckResult *r = (ServerCheckResult *)data;
-    char text[256];
-    if (r->available) {
-        snprintf(text, sizeof(text), "✅ Ollama 연결됨 (%s)", r->panel->client.model);
-    } else {
-        snprintf(text, sizeof(text), "⚠ Ollama 서버에 연결할 수 없음 — 'ollama serve' 실행 필요");
-    }
+    char *text = r->available ? trf(STR_AI_CONNECTED_FMT, r->panel->client.model)
+                              : (char *)tr(STR_AI_CONN_FAIL);
     gtk_label_set_text(r->panel->status, text);
+    if (r->available) g_free(text);
     g_free(r);
     return G_SOURCE_REMOVE;
 }
@@ -325,9 +319,9 @@ AiPanel *ai_panel_new(AiPanelGetCodeCb get_code, void *get_code_data,
 
     panel->box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 
-    GtkWidget *header = gtk_label_new(" 🤖 AI Assistant (로컬)");
-    gtk_widget_set_halign(header, GTK_ALIGN_START);
-    gtk_box_pack_start(GTK_BOX(panel->box), header, FALSE, FALSE, 4);
+    panel->header = gtk_label_new(tr(STR_AI_HEADER));
+    gtk_widget_set_halign(panel->header, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(panel->box), panel->header, FALSE, FALSE, 4);
 
     panel->display = GTK_TEXT_VIEW(gtk_text_view_new());
     gtk_text_view_set_editable(panel->display, FALSE);
@@ -356,22 +350,22 @@ AiPanel *ai_panel_new(AiPanelGetCodeCb get_code, void *get_code_data,
 
     /* 퀵 액션 버튼 줄 1: 역할 전환 (2번 기능) */
     GtkWidget *quick_row1 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
-    GtkWidget *review_btn = gtk_button_new_with_label("코드 리뷰");
-    GtkWidget *fix_btn = gtk_button_new_with_label("버그 수정");
-    GtkWidget *plan_btn = gtk_button_new_with_label("계획 세우기");
-    g_signal_connect(review_btn, "clicked", G_CALLBACK(on_review_clicked), panel);
-    g_signal_connect(fix_btn, "clicked", G_CALLBACK(on_fix_clicked), panel);
-    g_signal_connect(plan_btn, "clicked", G_CALLBACK(on_plan_clicked), panel);
-    gtk_box_pack_start(GTK_BOX(quick_row1), review_btn, FALSE, FALSE, 2);
-    gtk_box_pack_start(GTK_BOX(quick_row1), fix_btn, FALSE, FALSE, 2);
-    gtk_box_pack_start(GTK_BOX(quick_row1), plan_btn, FALSE, FALSE, 2);
+    panel->review_btn = GTK_BUTTON(gtk_button_new_with_label(tr(STR_BTN_REVIEW)));
+    panel->fix_btn = GTK_BUTTON(gtk_button_new_with_label(tr(STR_BTN_FIX)));
+    panel->plan_btn = GTK_BUTTON(gtk_button_new_with_label(tr(STR_BTN_PLAN)));
+    g_signal_connect(panel->review_btn, "clicked", G_CALLBACK(on_review_clicked), panel);
+    g_signal_connect(panel->fix_btn, "clicked", G_CALLBACK(on_fix_clicked), panel);
+    g_signal_connect(panel->plan_btn, "clicked", G_CALLBACK(on_plan_clicked), panel);
+    gtk_box_pack_start(GTK_BOX(quick_row1), GTK_WIDGET(panel->review_btn), FALSE, FALSE, 2);
+    gtk_box_pack_start(GTK_BOX(quick_row1), GTK_WIDGET(panel->fix_btn), FALSE, FALSE, 2);
+    gtk_box_pack_start(GTK_BOX(quick_row1), GTK_WIDGET(panel->plan_btn), FALSE, FALSE, 2);
     gtk_box_pack_start(GTK_BOX(panel->box), quick_row1, FALSE, FALSE, 4);
 
     /* 퀵 액션 버튼 줄 2: 코드 적용 (1번 기능) */
     GtkWidget *quick_row2 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
-    GtkWidget *apply_btn = gtk_button_new_with_label("⬇ 코드 적용");
-    g_signal_connect(apply_btn, "clicked", G_CALLBACK(on_apply_clicked), panel);
-    gtk_box_pack_end(GTK_BOX(quick_row2), apply_btn, FALSE, FALSE, 2);
+    panel->apply_btn = GTK_BUTTON(gtk_button_new_with_label(tr(STR_BTN_APPLY)));
+    g_signal_connect(panel->apply_btn, "clicked", G_CALLBACK(on_apply_clicked), panel);
+    gtk_box_pack_end(GTK_BOX(quick_row2), GTK_WIDGET(panel->apply_btn), FALSE, FALSE, 2);
     gtk_box_pack_start(GTK_BOX(panel->box), quick_row2, FALSE, FALSE, 4);
 
     /* 입력창 + 전송 버튼 */
@@ -380,13 +374,13 @@ AiPanel *ai_panel_new(AiPanelGetCodeCb get_code, void *get_code_data,
     g_signal_connect(panel->entry, "activate", G_CALLBACK(on_entry_activate), panel);
     gtk_box_pack_start(GTK_BOX(input_row), GTK_WIDGET(panel->entry), TRUE, TRUE, 4);
 
-    panel->send_btn = GTK_BUTTON(gtk_button_new_with_label("RUN"));
+    panel->send_btn = GTK_BUTTON(gtk_button_new_with_label(tr(STR_BTN_RUN)));
     g_signal_connect(panel->send_btn, "clicked", G_CALLBACK(on_send_clicked), panel);
     gtk_box_pack_start(GTK_BOX(input_row), GTK_WIDGET(panel->send_btn), FALSE, FALSE, 4);
 
     gtk_box_pack_start(GTK_BOX(panel->box), input_row, FALSE, FALSE, 6);
 
-    panel->status = GTK_LABEL(gtk_label_new("연결 확인 중..."));
+    panel->status = GTK_LABEL(gtk_label_new(tr(STR_AI_CONNECTING)));
     gtk_widget_set_halign(GTK_WIDGET(panel->status), GTK_ALIGN_START);
     gtk_box_pack_start(GTK_BOX(panel->box), GTK_WIDGET(panel->status), FALSE, FALSE, 4);
 
@@ -394,4 +388,17 @@ AiPanel *ai_panel_new(AiPanelGetCodeCb get_code, void *get_code_data,
     g_thread_unref(check_thread);
 
     return panel;
+}
+
+/* 언어 전환 시 — 정적 문구를 다시 쓰고 서버 상태를 새 언어로 다시 확인한다 */
+void ai_panel_refresh_language(AiPanel *panel) {
+    gtk_label_set_text(GTK_LABEL(panel->header), tr(STR_AI_HEADER));
+    gtk_button_set_label(panel->review_btn, tr(STR_BTN_REVIEW));
+    gtk_button_set_label(panel->fix_btn, tr(STR_BTN_FIX));
+    gtk_button_set_label(panel->plan_btn, tr(STR_BTN_PLAN));
+    gtk_button_set_label(panel->apply_btn, tr(STR_BTN_APPLY));
+    gtk_button_set_label(panel->send_btn, tr(STR_BTN_RUN));
+    gtk_label_set_text(panel->status, tr(STR_AI_CONNECTING));
+    GThread *check_thread = g_thread_new("ai-server-check", server_check_worker, panel);
+    g_thread_unref(check_thread);
 }

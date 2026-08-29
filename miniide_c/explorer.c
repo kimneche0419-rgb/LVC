@@ -1,8 +1,7 @@
 #include "explorer.h"
+#include "ui_lang.h"
 
-#include <dirent.h>
 #include <string.h>
-#include <sys/stat.h>
 
 enum { COL_NAME, COL_PATH, COL_IS_DIR, N_COLS };
 
@@ -25,56 +24,52 @@ static gboolean has_only_dummy_child(GtkTreeStore *store, GtkTreeIter *node) {
     return is_dummy;
 }
 
+/* 폴더 내용을 트리에 채운다 — GDir/GLib 만 써서 Linux 와 Windows 에서 같이 동작.
+ * (예전 dirent/stat 버전은 Linux 전용이었다) */
 static void populate_dir(Explorer *explorer, GtkTreeIter *parent, const char *path) {
-    DIR *dir = opendir(path);
+    GDir *dir = g_dir_open(path, 0, NULL);
     if (!dir) return;
 
-    struct dirent *entries[4096];
-    int count = 0;
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL && count < 4096) {
-        if (entry->d_name[0] == '.') continue;
-        entries[count++] = entry;
+    GPtrArray *names = g_ptr_array_new_with_free_func(g_free);
+    const char *name;
+    while ((name = g_dir_read_name(dir)) != NULL) {
+        if (name[0] == '.') continue;
+        g_ptr_array_add(names, g_strdup(name));
     }
-    /* readdir 버퍼는 closedir 전까지만 유효하므로 이름을 복사해둔다 */
-    char names[4096][256];
-    for (int i = 0; i < count; i++) {
-        g_strlcpy(names[i], entries[i]->d_name, sizeof(names[i]));
-    }
-    closedir(dir);
+    g_dir_close(dir);
 
-    /* 이름순 정렬 (디렉터리 먼저) */
-    for (int i = 0; i < count - 1; i++) {
-        for (int j = i + 1; j < count; j++) {
-            char pi[1024], pj[1024];
-            snprintf(pi, sizeof(pi), "%s/%s", path, names[i]);
-            snprintf(pj, sizeof(pj), "%s/%s", path, names[j]);
-            struct stat si, sj;
-            stat(pi, &si);
-            stat(pj, &sj);
-            gboolean i_dir = S_ISDIR(si.st_mode);
-            gboolean j_dir = S_ISDIR(sj.st_mode);
+    /* 이름순 정렬 (디렉터리 먼저) — 한글 이름도 g_utf8_collate 로 자연스럽게 정렬 */
+    GHashTable *is_dir_map = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    for (guint i = 0; i < names->len; i++) {
+        char *n = g_ptr_array_index(names, i);
+        char *full = g_build_filename(path, n, NULL);
+        g_hash_table_insert(is_dir_map, g_strdup(n),
+                            GINT_TO_POINTER(g_file_test(full, G_FILE_TEST_IS_DIR) ? 1 : 0));
+        g_free(full);
+    }
+    for (guint i = 0; i + 1 < names->len; i++) {
+        for (guint j = i + 1; j < names->len; j++) {
+            char *ni = g_ptr_array_index(names, i);
+            char *nj = g_ptr_array_index(names, j);
+            gboolean i_dir = GPOINTER_TO_INT(g_hash_table_lookup(is_dir_map, ni)) != 0;
+            gboolean j_dir = GPOINTER_TO_INT(g_hash_table_lookup(is_dir_map, nj)) != 0;
             gboolean should_swap = FALSE;
             if (!i_dir && j_dir) should_swap = TRUE;
-            else if (i_dir == j_dir && strcasecmp(names[i], names[j]) > 0) should_swap = TRUE;
+            else if (i_dir == j_dir && g_utf8_collate(ni, nj) > 0) should_swap = TRUE;
             if (should_swap) {
-                char tmp[256];
-                strcpy(tmp, names[i]);
-                strcpy(names[i], names[j]);
-                strcpy(names[j], tmp);
+                g_ptr_array_index(names, i) = nj;
+                g_ptr_array_index(names, j) = ni;
             }
         }
     }
 
-    for (int i = 0; i < count; i++) {
-        char full_path[1024];
-        snprintf(full_path, sizeof(full_path), "%s/%s", path, names[i]);
-        struct stat st;
-        if (stat(full_path, &st) != 0) continue;
-        gboolean is_dir = S_ISDIR(st.st_mode);
+    for (guint i = 0; i < names->len; i++) {
+        char *n = g_ptr_array_index(names, i);
+        char *full_path = g_build_filename(path, n, NULL);
+        gboolean is_dir = GPOINTER_TO_INT(g_hash_table_lookup(is_dir_map, n)) != 0;
 
-        char display[300];
-        snprintf(display, sizeof(display), "%s %s", is_dir ? "\xf0\x9f\x93\x81" : "\xf0\x9f\x93\x84", names[i]);
+        char display[600];
+        snprintf(display, sizeof(display), "%s %s", is_dir ? "\xf0\x9f\x93\x81" : "\xf0\x9f\x93\x84", n);
 
         GtkTreeIter node;
         gtk_tree_store_append(explorer->store, &node, parent);
@@ -86,7 +81,11 @@ static void populate_dir(Explorer *explorer, GtkTreeIter *parent, const char *pa
             gtk_tree_store_append(explorer->store, &dummy, &node);
             gtk_tree_store_set(explorer->store, &dummy, COL_NAME, "", COL_PATH, "", COL_IS_DIR, FALSE, -1);
         }
+        g_free(full_path);
     }
+
+    g_hash_table_destroy(is_dir_map);
+    g_ptr_array_free(names, TRUE);
 }
 
 static void on_row_expanded(GtkTreeView *tree_view, GtkTreeIter *iter, GtkTreePath *path, gpointer user_data) {
@@ -125,8 +124,8 @@ static void on_row_activated(GtkTreeView *tree_view, GtkTreePath *path,
 
 void explorer_open_folder_dialog(Explorer *explorer) {
     GtkWidget *dialog = gtk_file_chooser_dialog_new(
-        "폴더 선택", NULL, GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
-        "취소", GTK_RESPONSE_CANCEL, "열기", GTK_RESPONSE_ACCEPT, NULL);
+        tr(STR_FOLDER_SELECT), NULL, GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
+        tr(STR_BTN_CANCEL), GTK_RESPONSE_CANCEL, tr(STR_BTN_OPEN), GTK_RESPONSE_ACCEPT, NULL);
 
     if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
         char *folder = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
@@ -173,16 +172,16 @@ Explorer *explorer_new(GtkWindow *parent_window,
 
     explorer->box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 
-    GtkWidget *open_btn = gtk_button_new_with_label("\xf0\x9f\x93\x82 폴더 열기");
-    gtk_box_pack_start(GTK_BOX(explorer->box), open_btn, FALSE, FALSE, 4);
-    g_signal_connect(open_btn, "clicked", G_CALLBACK(on_open_folder_clicked), explorer);
+    explorer->open_btn = gtk_button_new_with_label(tr(STR_BTN_OPEN_FOLDER));
+    gtk_box_pack_start(GTK_BOX(explorer->box), explorer->open_btn, FALSE, FALSE, 4);
+    g_signal_connect(explorer->open_btn, "clicked", G_CALLBACK(on_open_folder_clicked), explorer);
 
     explorer->store = gtk_tree_store_new(N_COLS, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_BOOLEAN);
     explorer->tree_view = GTK_TREE_VIEW(gtk_tree_view_new_with_model(GTK_TREE_MODEL(explorer->store)));
     gtk_tree_view_set_headers_visible(explorer->tree_view, FALSE);
 
     GtkCellRenderer *renderer = gtk_cell_renderer_text_new();
-    GtkTreeViewColumn *column = gtk_tree_view_column_new_with_attributes("이름", renderer, "text", COL_NAME, NULL);
+    GtkTreeViewColumn *column = gtk_tree_view_column_new_with_attributes(tr(STR_COL_NAME), renderer, "text", COL_NAME, NULL);
     gtk_tree_view_append_column(explorer->tree_view, column);
 
     g_signal_connect(explorer->tree_view, "row-expanded", G_CALLBACK(on_row_expanded), explorer);
@@ -193,4 +192,8 @@ Explorer *explorer_new(GtkWindow *parent_window,
     gtk_box_pack_start(GTK_BOX(explorer->box), scroll, TRUE, TRUE, 0);
 
     return explorer;
+}
+
+void explorer_refresh_language(Explorer *explorer) {
+    gtk_button_set_label(GTK_BUTTON(explorer->open_btn), tr(STR_BTN_OPEN_FOLDER));
 }

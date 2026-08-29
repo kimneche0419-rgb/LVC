@@ -1,4 +1,16 @@
+/* Linux 용 터미널 구현 — VTE(gnome-terminal 과 같은 라이브러리)로
+ * 실제 셸 프로세스를 붙인다. 색상/커서 이동 등 완전한 터미널 렌더링을 지원한다.
+ * (Windows 용은 conpty_terminal.c — 같은 인터페이스를 구현한다)
+ */
 #include "terminal.h"
+
+#include <vte/vte.h>
+
+struct Terminal {
+    GtkWidget *box;      /* 노트북 탭에 붙일 최상위 위젯 */
+    VteTerminal *vte;
+    char cwd[1024];
+};
 
 static void spawn_shell(Terminal *terminal) {
     const char *shell = g_getenv("SHELL");
@@ -40,6 +52,10 @@ Terminal *terminal_new(void) {
     spawn_shell(terminal);
 
     return terminal;
+}
+
+GtkWidget *terminal_get_box(Terminal *terminal) {
+    return terminal->box;
 }
 
 void terminal_set_cwd(Terminal *terminal, const char *folder) {

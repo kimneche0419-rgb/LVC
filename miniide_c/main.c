@@ -1,17 +1,21 @@
 /* Mini IDE (C 버전) 진입점 — 메뉴, 3분할 레이아웃, 여러 파일 탭, 코드 실행.
  * 파이썬 버전(miniide/app.py)의 MiniIDEApp 구조를 C+GTK로 이식.
  * 3번 기능: 여러 파일을 탭으로 동시에 열기.
+ * Linux/Windows 양쪽에서 빌드된다 (프로세스 실행은 g_spawn 으로 공통화).
  */
 #include <gtk/gtk.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef G_OS_WIN32
 #include <unistd.h>
 #include <sys/wait.h>
+#endif
 
 #include "editor.h"
 #include "explorer.h"
 #include "terminal.h"
 #include "ai_panel.h"
+#include "ui_lang.h"
 
 typedef struct AppState AppState;
 
@@ -30,6 +34,7 @@ struct AppState {
     GtkTextView *console;
     GtkNotebook *bottom_tabs;
     GtkNotebook *editor_tabs;   /* 3번 기능: 파일 탭 묶음 */
+    GtkWidget *menu_bar;        /* 언어 전환 시 통째로 다시 만들기 위해 보관 */
 
     Explorer *explorer;
     Terminal *terminal;
@@ -66,7 +71,7 @@ static EditorTab *find_tab_by_path(AppState *app, const char *path) {
 
 static void update_tab_label(EditorTab *tab) {
     const char *base = tab->file_path ? strrchr(tab->file_path, '/') : NULL;
-    const char *name = tab->file_path ? (base ? base + 1 : tab->file_path) : "제목 없음";
+    const char *name = tab->file_path ? (base ? base + 1 : tab->file_path) : tr(STR_UNTITLED);
     char text[300];
     snprintf(text, sizeof(text), "%s%s", name, tab->dirty ? " ●" : "");
     gtk_label_set_text(tab->tab_text_label, text);
@@ -75,11 +80,11 @@ static void update_tab_label(EditorTab *tab) {
 static void update_title(AppState *app) {
     EditorTab *tab = current_tab(app);
     if (!tab) {
-        gtk_label_set_text(app->path_label, "  (열린 파일 없음)");
+        gtk_label_set_text(app->path_label, tr(STR_NO_FILE_OPEN));
         return;
     }
     char text[1200];
-    const char *name = tab->file_path ? tab->file_path : "제목 없음";
+    const char *name = tab->file_path ? tab->file_path : tr(STR_UNTITLED);
     snprintf(text, sizeof(text), "  %s%s", name, tab->dirty ? " ●" : "");
     gtk_label_set_text(app->path_label, text);
 }
@@ -102,7 +107,7 @@ static gboolean confirm_discard_tab(AppState *app, EditorTab *tab) {
     if (!tab->dirty) return TRUE;
     GtkWidget *dialog = gtk_message_dialog_new(
         app->window, GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION, GTK_BUTTONS_YES_NO,
-        "저장하지 않은 변경사항이 있습니다. 닫으면 사라집니다. 계속할까요?");
+        "%s", tr(STR_CONFIRM_DISCARD));
     int response = gtk_dialog_run(GTK_DIALOG(dialog));
     gtk_widget_destroy(dialog);
     return response == GTK_RESPONSE_YES;
@@ -112,8 +117,8 @@ static void save_tab(AppState *app, EditorTab *tab);
 
 static void save_tab_as(AppState *app, EditorTab *tab) {
     GtkWidget *dialog = gtk_file_chooser_dialog_new(
-        "다른 이름으로 저장", app->window, GTK_FILE_CHOOSER_ACTION_SAVE,
-        "취소", GTK_RESPONSE_CANCEL, "저장", GTK_RESPONSE_ACCEPT, NULL);
+        tr(STR_SAVE_AS_TITLE), app->window, GTK_FILE_CHOOSER_ACTION_SAVE,
+        tr(STR_BTN_CANCEL), GTK_RESPONSE_CANCEL, tr(STR_BTN_SAVE), GTK_RESPONSE_ACCEPT, NULL);
     gtk_file_chooser_set_do_overwrite_confirmation(GTK_FILE_CHOOSER(dialog), TRUE);
 
     if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
@@ -136,19 +141,20 @@ static void save_tab(AppState *app, EditorTab *tab) {
     char *content = editor_get_content(tab->editor);
     GError *error = NULL;
     if (!g_file_set_contents(tab->file_path, content, -1, &error)) {
+        char *msg = trf(STR_SAVE_ERR_FMT, error->message);
         GtkWidget *dialog = gtk_message_dialog_new(
-            app->window, GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_OK,
-            "파일 저장 중 오류가 발생했습니다.\n%s", error->message);
+            app->window, GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_OK, "%s", msg);
         gtk_dialog_run(GTK_DIALOG(dialog));
         gtk_widget_destroy(dialog);
+        g_free(msg);
         g_error_free(error);
     } else {
         tab->dirty = FALSE;
         update_tab_label(tab);
         update_title(app);
-        char msg[1200];
-        snprintf(msg, sizeof(msg), "저장 완료: %s", tab->file_path);
+        char *msg = trf(STR_SAVED_FMT, tab->file_path);
         log_console(app, msg, FALSE);
+        g_free(msg);
     }
     g_free(content);
 }
@@ -186,7 +192,7 @@ static void load_file_into_editor(const char *path, void *user_data) {
     if (!is_text_file(path)) {
         GtkWidget *dialog = gtk_message_dialog_new(
             app->window, GTK_DIALOG_MODAL, GTK_MESSAGE_WARNING, GTK_BUTTONS_OK,
-            "이 형식은 편집을 지원하지 않습니다.");
+            "%s", tr(STR_UNSUPPORTED));
         gtk_dialog_run(GTK_DIALOG(dialog));
         gtk_widget_destroy(dialog);
         return;
@@ -209,9 +215,10 @@ static void load_file_into_editor(const char *path, void *user_data) {
     gsize len = 0;
     GError *error = NULL;
     if (!g_file_get_contents(path, &content, &len, &error)) {
+        char *msg = trf(STR_OPEN_ERR_FMT, error->message);
         GtkWidget *dialog = gtk_message_dialog_new(
-            app->window, GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_OK,
-            "파일을 여는 중 오류가 발생했습니다.\n%s", error->message);
+            app->window, GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_OK, "%s", msg);
+        g_free(msg);
         gtk_dialog_run(GTK_DIALOG(dialog));
         gtk_widget_destroy(dialog);
         g_error_free(error);
@@ -314,7 +321,7 @@ static void bridge_apply_code(const char *code, void *user_data) {
     tab->dirty = TRUE;
     update_tab_label(tab);
     update_title(app);
-    log_console(app, "AI가 제안한 코드가 에디터에 적용되었습니다. (Ctrl+S로 저장하세요)", FALSE);
+    log_console(app, tr(STR_AI_APPLIED_CONSOLE), FALSE);
 }
 
 /* ---------------- 코드 실행 (.py 는 python3, .c 는 gcc 컴파일 후 실행) ---------------- */
@@ -353,41 +360,47 @@ static void post_output(AppState *app, const char *text, gboolean is_error) {
     g_idle_add(run_output_idle, msg);
 }
 
-/* argv 를 셸을 거치지 않고 fork+exec 로 직접 실행하고, stdout+stderr 를
- * out 에 모은다. 파일 경로에 특수문자가 있어도 셸 해석이 없으므로 안전하다
- * (파이썬 버전의 subprocess.run([...]) — 리스트 인자 — 와 같은 방식). */
-static int run_argv_capture(char *const argv[], GString *out) {
-    int pipefd[2];
-    if (pipe(pipefd) != 0) return -1;
+/* argv 를 셸을 거치지 않고 직접 실행하고, stdout+stderr 를 out 에 모은다.
+ * g_spawn_sync 는 GLib 의 멀티 OS 프로세스 실행 함수 — Linux 와 Windows 에서
+ * 같은 코드로 동작한다 (fork+exec / CreateProcess 를 내부에서 처리).
+ * 파일 경로에 특수문자가 있어도 셸 해석이 없으므로 안전하다
+ * (파이썬 버전의 subprocess.run([...]) — 리스트 인자 — 와 같은 방식).
+ * 인자는 const 가 없는 배열을 요구하므로 호출부에서 복사본을 쓴다. */
+static int run_argv_capture(char *argv[], GString *out) {
+    char *std_out = NULL, *std_err = NULL;
+    gint status = -1;
+    GError *error = NULL;
 
-    pid_t pid = fork();
-    if (pid < 0) {
-        close(pipefd[0]);
-        close(pipefd[1]);
+    if (!g_spawn_sync(NULL, argv, NULL, G_SPAWN_SEARCH_PATH,
+                      NULL, NULL, &std_out, &std_err, &status, &error)) {
+        char *msg = trf(STR_SPAWN_ERR_FMT, error->message);
+        g_string_append(out, msg);
+        g_free(msg);
+        g_error_free(error);
+        g_free(std_out);
+        g_free(std_err);
         return -1;
     }
-    if (pid == 0) {
-        /* 자식 프로세스: stdout/stderr 를 파이프로 연결하고 실행 */
-        close(pipefd[0]);
-        dup2(pipefd[1], STDOUT_FILENO);
-        dup2(pipefd[1], STDERR_FILENO);
-        close(pipefd[1]);
-        execvp(argv[0], argv);
-        _exit(127); /* execvp 자체가 실패한 경우 (예: 명령을 찾을 수 없음) */
-    }
 
-    close(pipefd[1]);
-    char buf[2048];
-    ssize_t n;
-    while ((n = read(pipefd[0], buf, sizeof(buf) - 1)) > 0) {
-        buf[n] = '\0';
-        g_string_append(out, buf);
-    }
-    close(pipefd[0]);
+    if (std_out) g_string_append(out, std_out);
+    if (std_err) g_string_append(out, std_err);
+    g_free(std_out);
+    g_free(std_err);
 
-    int status = 0;
-    waitpid(pid, &status, 0);
+#ifdef G_OS_WIN32
+    return status;   /* Windows: status 가 곧 종료 코드 */
+#else
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+#endif
+}
+
+/* 플랫폼별 파이썬 실행 파일 이름 — Windows 는 python, Linux 는 python3 */
+static const char *python_cmd(void) {
+#ifdef G_OS_WIN32
+    return "python";
+#else
+    return "python3";
+#endif
 }
 
 static gpointer run_worker(gpointer data) {
@@ -398,12 +411,19 @@ static gpointer run_worker(gpointer data) {
     int exit_code = -1;
 
     if (dot && g_ascii_strcasecmp(dot, ".py") == 0) {
-        char *argv[] = { "python3", (char *)path, NULL };
+        char *argv[] = { (char *)python_cmd(), (char *)path, NULL };
         exit_code = run_argv_capture(argv, out);
+        if (exit_code == -1) {
+            post_output(job->app, tr(STR_PY_NOT_FOUND), TRUE);
+        }
     } else if (dot && g_ascii_strcasecmp(dot, ".c") == 0) {
         char bin_path[1200];
+#ifdef G_OS_WIN32
+        snprintf(bin_path, sizeof(bin_path), "%s.exe", path);
+#else
         snprintf(bin_path, sizeof(bin_path), "%s.out", path);
-        char *compile_argv[] = { "gcc", (char *)path, "-o", bin_path, NULL };
+#endif
+        char *compile_argv[] = { (char *)"gcc", (char *)path, "-o", bin_path, NULL };
         int compile_rc = run_argv_capture(compile_argv, out);
         if (compile_rc == 0) {
             char *run_argv[] = { bin_path, NULL };
@@ -412,16 +432,16 @@ static gpointer run_worker(gpointer data) {
             exit_code = compile_rc;
         }
     } else {
-        post_output(job->app, "실행 불가: .py 또는 .c 파일만 지원합니다.", TRUE);
+        post_output(job->app, tr(STR_RUN_UNSUPPORTED), TRUE);
         g_idle_add(run_done_idle, job);
         g_string_free(out, TRUE);
         return NULL;
     }
 
     if (out->len > 0) post_output(job->app, out->str, FALSE);
-    char code_msg[64];
-    snprintf(code_msg, sizeof(code_msg), "(종료 코드: %d)", exit_code);
+    char *code_msg = trf(STR_EXIT_CODE_FMT, exit_code);
     post_output(job->app, code_msg, FALSE);
+    g_free(code_msg);
     g_string_free(out, TRUE);
 
     g_idle_add(run_done_idle, job);
@@ -433,7 +453,7 @@ static void run_current_file(AppState *app) {
     if (!tab || !tab->file_path) {
         GtkWidget *dialog = gtk_message_dialog_new(
             app->window, GTK_DIALOG_MODAL, GTK_MESSAGE_WARNING, GTK_BUTTONS_OK,
-            "먼저 .py 또는 .c 파일을 저장한 뒤 실행해주세요.");
+            "%s", tr(STR_RUN_SAVE_FIRST));
         gtk_dialog_run(GTK_DIALOG(dialog));
         gtk_widget_destroy(dialog);
         return;
@@ -441,9 +461,9 @@ static void run_current_file(AppState *app) {
     save_tab(app, tab);
     gtk_notebook_set_current_page(app->bottom_tabs, 0);
 
-    char msg[1200];
-    snprintf(msg, sizeof(msg), "▶ 실행: %s", tab->file_path);
+    char *msg = trf(STR_RUN_FMT, tab->file_path);
     log_console(app, msg, FALSE);
+    g_free(msg);
 
     RunJob *job = g_new0(RunJob, 1);
     job->app = app;
@@ -481,19 +501,51 @@ static gboolean on_delete_event(GtkWidget *widget, GdkEvent *event, gpointer use
     return FALSE;
 }
 
+/* ---------------- 언어 전환 (한/영) ---------------- */
+
+static void rebuild_menu_bar(AppState *app);  /* 아래 build_menu_bar 와 함께 정의 */
+
+static void on_language_changed(void *user_data) {
+    AppState *app = (AppState *)user_data;
+
+    /* 메뉴바를 새 언어로 다시 만든다 */
+    rebuild_menu_bar(app);
+
+    /* 나머지 정적 문구 일괄 갱신 */
+    gtk_window_set_title(app->window, tr(STR_WINDOW_TITLE));
+    update_title(app);
+    gint n = gtk_notebook_get_n_pages(app->editor_tabs);
+    for (gint i = 0; i < n; i++) {
+        EditorTab *tab = tab_for_page(app->editor_tabs, i);
+        if (tab) update_tab_label(tab);
+    }
+    ai_panel_refresh_language(app->ai_panel);
+    explorer_refresh_language(app->explorer);
+}
+
+static void on_menu_lang_ko(GtkMenuItem *item, gpointer user_data) {
+    (void)item; (void)user_data;
+    ui_lang_set(UI_LANG_KO);
+}
+
+static void on_menu_lang_en(GtkMenuItem *item, gpointer user_data) {
+    (void)item; (void)user_data;
+    ui_lang_set(UI_LANG_EN);
+}
+
 static GtkWidget *build_menu_bar(AppState *app) {
     GtkWidget *menu_bar = gtk_menu_bar_new();
 
     GtkWidget *file_menu = gtk_menu_new();
-    GtkWidget *file_item = gtk_menu_item_new_with_label("파일");
+    GtkWidget *file_item = gtk_menu_item_new_with_label(tr(STR_MENU_FILE));
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(file_item), file_menu);
 
-    GtkWidget *new_item = gtk_menu_item_new_with_label("새 파일 (Ctrl+N)");
-    GtkWidget *open_item = gtk_menu_item_new_with_label("폴더 열기 (Ctrl+O)");
-    GtkWidget *save_item = gtk_menu_item_new_with_label("파일 저장 (Ctrl+S)");
-    GtkWidget *save_as_item = gtk_menu_item_new_with_label("다른 이름으로 저장");
-    GtkWidget *close_tab_item = gtk_menu_item_new_with_label("탭 닫기 (Ctrl+W)");
-    GtkWidget *quit_item = gtk_menu_item_new_with_label("종료");
+    GtkWidget *new_item = gtk_menu_item_new_with_label(tr(STR_MENU_NEW));
+    GtkWidget *open_item = gtk_menu_item_new_with_label(tr(STR_MENU_OPEN_FOLDER));
+    GtkWidget *save_item = gtk_menu_item_new_with_label(tr(STR_MENU_SAVE));
+    GtkWidget *save_as_item = gtk_menu_item_new_with_label(tr(STR_MENU_SAVE_AS));
+    GtkWidget *close_tab_item = gtk_menu_item_new_with_label(tr(STR_MENU_CLOSE_TAB));
+    GtkWidget *quit_item = gtk_menu_item_new_with_label(tr(STR_MENU_QUIT));
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu), new_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu), open_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(file_menu), save_item);
@@ -509,19 +561,48 @@ static GtkWidget *build_menu_bar(AppState *app) {
     g_signal_connect(quit_item, "activate", G_CALLBACK(on_menu_quit), app);
 
     GtkWidget *run_menu = gtk_menu_new();
-    GtkWidget *run_item = gtk_menu_item_new_with_label("실행");
+    GtkWidget *run_item = gtk_menu_item_new_with_label(tr(STR_MENU_RUN));
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(run_item), run_menu);
-    GtkWidget *run_file_item = gtk_menu_item_new_with_label("파일 실행 (F5)");
-    GtkWidget *terminal_item = gtk_menu_item_new_with_label("터미널 열기 (Ctrl+`)");
+    GtkWidget *run_file_item = gtk_menu_item_new_with_label(tr(STR_MENU_RUN_FILE));
+    GtkWidget *terminal_item = gtk_menu_item_new_with_label(tr(STR_MENU_TERMINAL));
     gtk_menu_shell_append(GTK_MENU_SHELL(run_menu), run_file_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(run_menu), terminal_item);
     g_signal_connect(run_file_item, "activate", G_CALLBACK(on_menu_run), app);
     g_signal_connect(terminal_item, "activate", G_CALLBACK(on_menu_terminal), app);
 
+    /* 보기 메뉴 — 언어 전환 */
+    GtkWidget *view_menu = gtk_menu_new();
+    GtkWidget *view_item = gtk_menu_item_new_with_label(tr(STR_MENU_VIEW));
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(view_item), view_menu);
+
+    GtkWidget *lang_menu = gtk_menu_new();
+    GtkWidget *lang_item = gtk_menu_item_new_with_label(tr(STR_MENU_LANGUAGE));
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(lang_item), lang_menu);
+
+    GtkWidget *ko_item = gtk_menu_item_new_with_label(ui_lang_name(UI_LANG_KO));
+    GtkWidget *en_item = gtk_menu_item_new_with_label(ui_lang_name(UI_LANG_EN));
+    gtk_menu_shell_append(GTK_MENU_SHELL(lang_menu), ko_item);
+    gtk_menu_shell_append(GTK_MENU_SHELL(lang_menu), en_item);
+    g_signal_connect(ko_item, "activate", G_CALLBACK(on_menu_lang_ko), app);
+    g_signal_connect(en_item, "activate", G_CALLBACK(on_menu_lang_en), app);
+    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu), lang_item);
+
     gtk_menu_shell_append(GTK_MENU_SHELL(menu_bar), file_item);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu_bar), run_item);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu_bar), view_item);
 
     return menu_bar;
+}
+
+/* 언어 전환 시 호출 — 기존 메뉴바를 치우고 같은 자리에 새로 만든다 */
+static void rebuild_menu_bar(AppState *app) {
+    GtkWidget *parent = gtk_widget_get_parent(app->menu_bar);
+    if (!parent) return;
+    gtk_widget_destroy(app->menu_bar);
+    app->menu_bar = build_menu_bar(app);
+    gtk_box_pack_start(GTK_BOX(parent), app->menu_bar, FALSE, FALSE, 0);
+    gtk_box_reorder_child(GTK_BOX(parent), app->menu_bar, 0);
+    gtk_widget_show_all(app->menu_bar);
 }
 
 /* ---------------- 단축키 ---------------- */
@@ -550,11 +631,13 @@ static gboolean on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer use
 
 int main(int argc, char **argv) {
     gtk_init(&argc, &argv);
+    ui_lang_init();
 
     AppState *app = g_new0(AppState, 1);
+    ui_lang_on_changed(on_language_changed, app);  /* 언어 바뀌면 UI 문구 일괄 갱신 */
 
     app->window = GTK_WINDOW(gtk_window_new(GTK_WINDOW_TOPLEVEL));
-    gtk_window_set_title(app->window, "Mini IDE (C) — 로컬 AI (Ollama)");
+    gtk_window_set_title(app->window, tr(STR_WINDOW_TITLE));
     gtk_window_set_default_size(app->window, 1180, 760);
     g_signal_connect(app->window, "delete-event", G_CALLBACK(on_delete_event), NULL);
     g_signal_connect(app->window, "key-press-event", G_CALLBACK(on_key_press), app);
@@ -562,7 +645,8 @@ int main(int argc, char **argv) {
     GtkWidget *root_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_container_add(GTK_CONTAINER(app->window), root_box);
 
-    gtk_box_pack_start(GTK_BOX(root_box), build_menu_bar(app), FALSE, FALSE, 0);
+    app->menu_bar = build_menu_bar(app);
+    gtk_box_pack_start(GTK_BOX(root_box), app->menu_bar, FALSE, FALSE, 0);
 
     GtkWidget *paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
     gtk_box_pack_start(GTK_BOX(root_box), paned, TRUE, TRUE, 0);
@@ -575,7 +659,7 @@ int main(int argc, char **argv) {
     /* [중앙] 경로표시줄 + 파일 탭 + 하단(OUTPUT/TERMINAL) */
     GtkWidget *center_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 
-    app->path_label = GTK_LABEL(gtk_label_new("  (열린 파일 없음)"));
+    app->path_label = GTK_LABEL(gtk_label_new(tr(STR_NO_FILE_OPEN)));
     gtk_widget_set_halign(GTK_WIDGET(app->path_label), GTK_ALIGN_START);
     gtk_box_pack_start(GTK_BOX(center_box), GTK_WIDGET(app->path_label), FALSE, FALSE, 2);
 
@@ -604,9 +688,9 @@ int main(int argc, char **argv) {
     gtk_container_add(GTK_CONTAINER(output_scroll), GTK_WIDGET(app->console));
     gtk_notebook_append_page(app->bottom_tabs, output_scroll, gtk_label_new("OUTPUT"));
 
-    /* TERMINAL 탭 */
+    /* TERMINAL 탭 (Linux: VTE, Windows: ConPTY — 같은 인터페이스) */
     app->terminal = terminal_new();
-    gtk_notebook_append_page(app->bottom_tabs, app->terminal->box, gtk_label_new("TERMINAL"));
+    gtk_notebook_append_page(app->bottom_tabs, terminal_get_box(app->terminal), gtk_label_new("TERMINAL"));
 
     /* [우측] AI 패널 */
     app->ai_panel = ai_panel_new(bridge_get_code, app, bridge_apply_code, app);

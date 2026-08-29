@@ -1,3 +1,6 @@
 *.o
 miniide_c/miniide_c
 .moai/
+miniide_c/*.win.o
+miniide_c/miniide.exe
+miniide_c/dist/

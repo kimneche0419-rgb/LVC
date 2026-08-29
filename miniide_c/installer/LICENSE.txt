@@ -1,0 +1,8 @@
+Mini IDE - Terms of Use
+
+This software (including bundled open-source libraries such as GTK,
+GLib and libcurl) may be used freely for personal and educational
+purposes. It is provided "as is", without warranty of any kind.
+
+Library licenses: GTK/GLib/curl follow their respective open-source
+licenses (LGPL / MIT style). See each project's homepage for details.

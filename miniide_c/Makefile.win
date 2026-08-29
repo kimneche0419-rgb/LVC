@@ -1,0 +1,52 @@
+# Windows 빌드 — MSYS2 MINGW64 셸 안에서 실행한다 (WSL 에서는 build_windows.sh 경유).
+#   make -f Makefile.win            → miniide.exe 빌드
+#   make -f Makefile.win bundle     → dist/MiniIDE 배포 폴더 조립 (bin/lib/share 구조 유지)
+#   make -f Makefile.win installer  → bundle 후 NSIS 인스톨러(dist/MiniIDE-Setup.exe) 생성
+CC = gcc
+CFLAGS = -Wall -Wextra -O2 $(shell pkg-config --cflags gtk+-3.0)
+LDFLAGS = $(shell pkg-config --libs gtk+-3.0) -lcurl -mwindows
+
+# Windows 는 VTE 대신 conpty_terminal.c 사용 (같은 terminal.h 인터페이스)
+SRCS = main.c editor.c explorer.c conpty_terminal.c ai_client.c ai_panel.c ui_lang.c
+OBJS = $(SRCS:.c=.win.o)
+TARGET = miniide.exe
+
+MINGW_PREFIX = /mingw64
+DIST = dist
+APPDIR = $(DIST)/MiniIDE
+
+.PHONY: all bundle installer clean
+
+all: $(TARGET)
+
+$(TARGET): $(OBJS)
+	$(CC) $(OBJS) -o $(TARGET) $(LDFLAGS)
+
+%.win.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# 배포 폴더: mingw64 의 prefix 구조(bin/lib/share)를 그대로 유지해야
+# GTK/gdk-pixbuf 가 자기 위치 기준으로 리소스를 찾는다.
+bundle: $(TARGET)
+	rm -rf $(APPDIR)
+	mkdir -p $(APPDIR)/bin $(APPDIR)/lib $(APPDIR)/share $(APPDIR)/etc
+	cp $(TARGET) $(APPDIR)/bin/
+	# exe 가 필요로 하는 DLL 들을 ldd 로 찾아 복사
+	ldd $(TARGET) | awk '/mingw64|\/msys-/ {print $$3}' | sort -u | while read dll; do cp "$$dll" $(APPDIR)/bin/ 2>/dev/null || true; done
+	# GTK 리소스: 스키마 / 아이콘 테마 / gdk-pixbuf 로더 / gtk 설정
+	cp -r $(MINGW_PREFIX)/lib/gdk-pixbuf-2.0 $(APPDIR)/lib/
+	mkdir -p $(APPDIR)/share/glib-2.0
+	cp -r $(MINGW_PREFIX)/share/glib-2.0/schemas $(APPDIR)/share/glib-2.0/
+	mkdir -p $(APPDIR)/share/icons
+	cp -r $(MINGW_PREFIX)/share/icons/Adwaita $(APPDIR)/share/icons/ 2>/dev/null || true
+	cp -r $(MINGW_PREFIX)/share/icons/hicolor/index.theme $(APPDIR)/share/icons/ 2>/dev/null || mkdir -p $(APPDIR)/share/icons/hicolor
+	cp -r $(MINGW_PREFIX)/etc/gtk-3.0 $(APPDIR)/etc/ 2>/dev/null || true
+	@echo "== bundle done: $(APPDIR)"
+
+# NSIS 인스톨러 생성 (NSIS 스크립트는 installer/miniide.nsi)
+installer: bundle
+	makensis -DVERSION=1.0.0 installer/miniide.nsi
+
+clean:
+	rm -f $(OBJS) $(TARGET)
+	rm -rf $(DIST)
