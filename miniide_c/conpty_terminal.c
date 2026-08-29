@@ -15,11 +15,14 @@
 #define _WIN32_WINNT 0x0A00
 #endif
 #include <windows.h>
+#include <shlobj.h>
 
 #include "terminal.h"
 #include "ui_lang.h"
 
+#include <stdio.h>
 #include <string.h>
+#include <wchar.h>
 
 struct Terminal {
     GtkWidget *box;
@@ -376,6 +379,19 @@ static gboolean on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer use
 
 /* ---------------- ConPTY 프로세스 시작 ---------------- */
 
+/* PowerShell 7(pwsh.exe)의 전체 경로를 찾는다. 못 찾으면 NULL.
+ * 1) PATH 검색(winget MSI 설치), 2) 스토어(MSIX) 방식의 실행 별칭 위치. */
+static const wchar_t *find_pwsh(wchar_t *buf, size_t buflen) {
+    if (SearchPathW(NULL, L"pwsh.exe", NULL, (DWORD)buflen, buf, NULL) != 0) return buf;
+    PWSTR local = NULL;
+    if (SUCCEEDED(SHGetKnownFolderPath(&FOLDERID_LocalAppData, 0, NULL, &local))) {
+        swprintf(buf, buflen, L"%ls\\Microsoft\\WindowsApps\\pwsh.exe", local);
+        CoTaskMemFree(local);
+        if (GetFileAttributesW(buf) != INVALID_FILE_ATTRIBUTES) return buf;
+    }
+    return NULL;
+}
+
 static BOOL conpty_spawn(Terminal *t, const char *cwd) {
     HANDLE in_read = NULL, out_write = NULL;
     SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
@@ -402,9 +418,18 @@ static BOOL conpty_spawn(Terminal *t, const char *cwd) {
                               PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
                               t->hpc, sizeof(t->hpc), NULL, NULL);
 
-    /* -NoExit -Command: 시작하자마자 코드페이지를 UTF-8(65001) 로 바꾼다.
-     * 이래야 한글 입출력이 왕복 모두 UTF-8 로 흐른다. */
-    wchar_t cmdline[] = L"powershell.exe -NoExit -Command \"chcp.com 65001 > $null\"";
+    /* PowerShell 7(pwsh)이 설치되어 있으면 그것을 쓰고,
+     * 없으면 Windows 에 기본 내장된 powershell.exe 로 떨어진다.
+     * -NoExit -Command: 시작하자마자 코드페이지를 UTF-8(65001) 로 바꾼다.
+     * 이래야 한글 입출력이 왕복 모두 UTF-8 로 흐른다. (pwsh 7은 기본이 UTF-8이라
+     * chcp 이 무해하다) 전체 경로에 공백이 있을 수 있어 겹따옴표로 감싼다. */
+    wchar_t pwsh_path[MAX_PATH];
+    const wchar_t *found = find_pwsh(pwsh_path, MAX_PATH);
+    wchar_t cmdline[512];
+    swprintf(cmdline, 512,
+             found ? L"\"%ls\" -NoExit -Command \"chcp.com 65001 > $null\""
+                   : L"powershell.exe -NoExit -Command \"chcp.com 65001 > $null\"",
+             found ? found : L"");
     wchar_t wcwd[MAX_PATH];
     MultiByteToWideChar(CP_UTF8, 0, cwd, -1, wcwd, MAX_PATH);
 
