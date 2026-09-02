@@ -1,6 +1,11 @@
 *.o
+*.exe
 miniide_c/miniide_c
 .moai/
 miniide_c/*.win.o
 miniide_c/miniide.exe
 miniide_c/dist/
+miniide_c/tests/*.exe
+miniide_c/tests/*.out
+miniide_c/tests/*.log
+.webui_secret_key
