@@ -18,8 +18,8 @@ typedef enum {
 
 /* 후보 순서 = 우선순위. 없는 모델은 건너뛰고 다음 후보로 자동 선택된다. */
 static const char *LIGHT_MODELS[] = {"qwen2.5-coder:1.5b", "qwen2.5-coder:3b", NULL};
-static const char *CODE_MODELS[]  = {"qwen2.5-coder:3b", "qwen2.5-coder:1.5b", NULL};
-static const char *PLAN_MODELS[]  = {"qwen2.5:3b", "qwen2.5-coder:3b", "qwen2.5-coder:1.5b", NULL};
+static const char *CODE_MODELS[]  = {"deepseek-coder-v2:16b-lite-instruct", "qwen2.5-coder:3b", "qwen2.5-coder:1.5b", NULL};
+static const char *PLAN_MODELS[]  = {"deepseek-coder-v2:16b-lite-instruct", "qwen2.5-coder:3b", "qwen2.5-coder:1.5b", NULL};
 
 /* 역할별 최대 출력 토큰 — 답변 길이를 제한해 완료 시간을 줄인다 */
 static const struct { AiRole role; int num_predict; } ROLE_OPTIONS[] = {
