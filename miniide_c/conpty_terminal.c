@@ -21,6 +21,7 @@
 #include "ui_lang.h"
 
 #include <stdio.h>
+#include <stdarg.h>
 #include <string.h>
 #include <wchar.h>
 
@@ -56,6 +57,23 @@ static void create_color_tags(Terminal *t) {
         snprintf(name, sizeof(name), "c%d", i);
         gtk_text_buffer_create_tag(buf, name, "foreground", FG_COLORS[i], NULL);
     }
+}
+
+/* ---------------- 진단 로그 ---------------- */
+
+/* 터미널 문제(검은 화면 등)의 원인 파악용 — <TEMP>\miniide-terminal.log 에 기록.
+ * 항상 켜 두지만 한 줄짜리 사실만 적는다. 원인 확인 후에도 남겨둔다. */
+static void term_log(const char *fmt, ...) {
+    char *path = g_build_filename(g_get_tmp_dir(), "miniide-terminal.log", NULL);
+    FILE *f = fopen(path, "a");
+    g_free(path);
+    if (!f) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    fputc('\n', f);
+    va_end(ap);
+    fclose(f);
 }
 
 /* ---------------- 콘솔 입출력 ---------------- */
@@ -310,18 +328,44 @@ static gboolean out_chunk_idle(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
-/* 읽기 스레드: ConPTY 출력 파이프를 계속 읽어 메인 스레드로 넘긴다 */
+/* 읽기 스레드: ConPTY 출력 파이프를 계속 읽어 메인 스레드로 넘긴다.
+ * 차단 ReadFile 대신 PeekNamedPipe 폴링 방식 — 스레드에서 차단 읽기를
+ * 하면 ConPTY 출력을 놓치는 문제가 있어(mingw 환경에서 재현 확인)
+ * 진단에서 검증된 Peek 방식을 쓴다. */
 static gpointer reader_thread(gpointer data) {
     Terminal *t = (Terminal *)data;
     char buf[4096];
     DWORD n = 0;
-    while (t->alive && ReadFile(t->out_read, buf, sizeof(buf), &n, NULL) && n > 0) {
+    unsigned long total = 0;
+    gboolean logged_first = FALSE;
+    while (t->alive) {
+        DWORD avail = 0;
+        if (!PeekNamedPipe(t->out_read, NULL, 0, NULL, &avail, NULL)) {
+            term_log("reader: peek fail %lu", GetLastError());
+            break;
+        }
+        if (avail == 0) {
+            Sleep(30);  /* 데이터 없으면 잠깐 쉬고 재시도 */
+            continue;
+        }
+        if (!ReadFile(t->out_read, buf, sizeof(buf), &n, NULL) || n == 0) break;
+        if (!logged_first) {
+            char hex[80];
+            int hl = 0;
+            for (DWORD i = 0; i < n && i < 20 && hl < (int)sizeof(hex) - 4; i++) {
+                hl += sprintf(hex + hl, "%02x ", (unsigned char)buf[i]);
+            }
+            term_log("reader: first chunk %lu bytes: %s", (unsigned long)n, hex);
+            logged_first = TRUE;
+        }
+        total += n;
         OutChunk *oc = g_new0(OutChunk, 1);
         oc->t = t;
         oc->data = g_memdup2(buf, n);
         oc->len = n;
         g_idle_add(out_chunk_idle, oc);
     }
+    term_log("reader: exit (alive=%d, total=%lu)", (int)t->alive, total);
     InterlockedExchange(&t->alive, 0);
     return NULL;
 }
@@ -380,13 +424,26 @@ static gboolean on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer use
 /* ---------------- ConPTY 프로세스 시작 ---------------- */
 
 /* PowerShell 7(pwsh.exe)의 전체 경로를 찾는다. 못 찾으면 NULL.
- * 1) PATH 검색(winget MSI 설치), 2) 스토어(MSIX) 방식의 실행 별칭 위치. */
+ * 1) PATH 검색 — 단 WindowsApps 실행 별칭은 제외. MSIX 별칭은 별도
+ *    프로세스를 다시 띄우는 방식이라 ConPTY 연결이 따라가지 못해
+ *    검은 화면이 된다.
+ * 2) MSI 설치 경로(Program Files), 3) ZIP 휴대용 설치 경로(관리자 권한 불필요). */
 static const wchar_t *find_pwsh(wchar_t *buf, size_t buflen) {
-    if (SearchPathW(NULL, L"pwsh.exe", NULL, (DWORD)buflen, buf, NULL) != 0) return buf;
-    PWSTR local = NULL;
-    if (SUCCEEDED(SHGetKnownFolderPath(&FOLDERID_LocalAppData, 0, NULL, &local))) {
-        swprintf(buf, buflen, L"%ls\\Microsoft\\WindowsApps\\pwsh.exe", local);
-        CoTaskMemFree(local);
+    wchar_t found[MAX_PATH];
+    if (SearchPathW(NULL, L"pwsh.exe", NULL, MAX_PATH, found, NULL) != 0 &&
+        wcsstr(found, L"WindowsApps") == NULL) {
+        wcscpy(buf, found);
+        return buf;
+    }
+    PWSTR base = NULL;
+    if (SUCCEEDED(SHGetKnownFolderPath(&FOLDERID_ProgramFilesX64, 0, NULL, &base))) {
+        swprintf(buf, buflen, L"%ls\\PowerShell\\7\\pwsh.exe", base);
+        CoTaskMemFree(base);
+        if (GetFileAttributesW(buf) != INVALID_FILE_ATTRIBUTES) return buf;
+    }
+    if (SUCCEEDED(SHGetKnownFolderPath(&FOLDERID_LocalAppData, 0, NULL, &base))) {
+        swprintf(buf, buflen, L"%ls\\Programs\\PowerShell\\7\\pwsh.exe", base);
+        CoTaskMemFree(base);
         if (GetFileAttributesW(buf) != INVALID_FILE_ATTRIBUTES) return buf;
     }
     return NULL;
@@ -405,7 +462,10 @@ static BOOL conpty_spawn(Terminal *t, const char *cwd) {
     HRESULT hr = CreatePseudoConsole(size, in_read, out_write, 0, &t->hpc);
     CloseHandle(in_read);
     CloseHandle(out_write);
-    if (FAILED(hr)) return FALSE;
+    if (FAILED(hr)) {
+        term_log("CreatePseudoConsole failed: hr=0x%08lx", (unsigned long)hr);
+        return FALSE;
+    }
 
     STARTUPINFOEXW si = {0};
     si.StartupInfo.cb = sizeof(si);
@@ -413,10 +473,15 @@ static BOOL conpty_spawn(Terminal *t, const char *cwd) {
     SIZE_T attr_size = 0;
     InitializeProcThreadAttributeList(NULL, 1, 0, &attr_size);
     si.lpAttributeList = HeapAlloc(GetProcessHeap(), 0, attr_size);
-    InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &attr_size);
-    UpdateProcThreadAttribute(si.lpAttributeList, 0,
-                              PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-                              t->hpc, sizeof(t->hpc), NULL, NULL);
+    BOOL ok_init2 = InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &attr_size);
+    BOOL ok_upd = UpdateProcThreadAttribute(si.lpAttributeList, 0,
+                                            PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+                                            t->hpc, sizeof(t->hpc), NULL, NULL);
+    term_log("attr: init2=%d(%lu) update=%d(%lu) attrval=0x%p macro=0x%lx sizeof_hpc=%zu",
+             (int)ok_init2, ok_init2 ? 0ul : GetLastError(),
+             (int)ok_upd, ok_upd ? 0ul : GetLastError(),
+             (void *)t->hpc, (unsigned long)PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+             sizeof(t->hpc));
 
     /* PowerShell 7(pwsh)이 설치되어 있으면 그것을 쓰고,
      * 없으면 Windows 에 기본 내장된 powershell.exe 로 떨어진다.
@@ -426,24 +491,53 @@ static BOOL conpty_spawn(Terminal *t, const char *cwd) {
     wchar_t pwsh_path[MAX_PATH];
     const wchar_t *found = find_pwsh(pwsh_path, MAX_PATH);
     wchar_t cmdline[512];
-    swprintf(cmdline, 512,
-             found ? L"\"%ls\" -NoExit -Command \"chcp.com 65001 > $null\""
-                   : L"powershell.exe -NoExit -Command \"chcp.com 65001 > $null\"",
-             found ? found : L"");
+
+    /* 진단용: MINIIDE_TERM_SHELL=cmd|powershell|pwshplain 로 셸을 강제 지정 */
+    const char *env_shell = getenv("MINIIDE_TERM_SHELL");
+    if (env_shell && g_strcmp0(env_shell, "cmd") == 0) {
+        swprintf(cmdline, 512, L"cmd.exe");
+    } else if (env_shell && g_strcmp0(env_shell, "powershell") == 0) {
+        swprintf(cmdline, 512, L"powershell.exe -NoExit -Command \"chcp.com 65001 > $null\"");
+    } else if (env_shell && g_strcmp0(env_shell, "pwshplain") == 0) {
+        /* chcp 없이 순수 pwsh — chcp 충돌 여부 확인용 */
+        if (found) swprintf(cmdline, 512, L"\"%ls\" -NoLogo -NoExit", found);
+        else swprintf(cmdline, 512, L"powershell.exe -NoLogo -NoExit");
+    } else if (found) {
+        swprintf(cmdline, 512, L"\"%ls\" -NoExit -Command \"chcp.com 65001 > $null\"", found);
+    } else {
+        swprintf(cmdline, 512, L"powershell.exe -NoExit -Command \"chcp.com 65001 > $null\"");
+    }
     wchar_t wcwd[MAX_PATH];
     MultiByteToWideChar(CP_UTF8, 0, cwd, -1, wcwd, MAX_PATH);
 
     BOOL ok = CreateProcessW(NULL, cmdline, NULL, NULL, FALSE,
                              EXTENDED_STARTUPINFO_PRESENT,
                              NULL, wcwd, &si.StartupInfo, &pi);
+    term_log("spawn: cmdline=%ls ok=%d last_error=%lu", cmdline,
+             (int)ok, ok ? 0ul : GetLastError());
 
-    DeleteProcThreadAttributeList(si.lpAttributeList);
-    HeapFree(GetProcessHeap(), 0, si.lpAttributeList);
+    /* 진단: 속성 리스트 즉시 해제가 ConPTY 연결을 끊는 의심 → 해제 보류 */
+    /* DeleteProcThreadAttributeList(si.lpAttributeList);
+       HeapFree(GetProcessHeap(), 0, si.lpAttributeList); */
+    term_log("attrlist kept alive (diagnostic)");
 
     if (!ok) return FALSE;
     t->hproc = pi.hProcess;
     CloseHandle(pi.hThread);
     return TRUE;
+}
+
+/* 진단: 3초 뒤 자식 셸이 살아있는지, 죽었다면 종료 코드는 무엇인지 로그 */
+static gboolean diag_child_alive(gpointer data) {
+    Terminal *t = (Terminal *)data;
+    if (!t->hproc) return G_SOURCE_REMOVE;
+    DWORD code = 0;
+    if (WaitForSingleObject(t->hproc, 0) == WAIT_OBJECT_0 && GetExitCodeProcess(t->hproc, &code)) {
+        term_log("child: EXITED code=%lu", (unsigned long)code);
+    } else {
+        term_log("child: still running");
+    }
+    return G_SOURCE_REMOVE;
 }
 
 /* ---------------- 공용 인터페이스 ---------------- */
@@ -484,6 +578,7 @@ Terminal *terminal_new(void) {
     if (conpty_spawn(t, cwd)) {
         g_signal_connect(t->buf, "insert-text", G_CALLBACK(on_insert_text), t);
         g_signal_connect(t->view, "key-press-event", G_CALLBACK(on_key_press), t);
+        g_timeout_add(3000, diag_child_alive, t);
         t->reader = g_thread_new("conpty-read", reader_thread, t);
     } else {
         /* ConPTY 실패(구형 Windows 등) — 안내문만 표시 */

@@ -73,6 +73,52 @@ static const char *role_model(AiPanel *panel, AiRole role) {
     }
 }
 
+/* 역할별 시스템 프롬프트 — 코딩/기획 전문가 스킬을 요청마다 주입한다 */
+static const char *role_system_prompt(AiRole role) {
+    switch (role) {
+        case AI_ROLE_CODE:  return tr(STR_SYS_CODE);
+        case AI_ROLE_PLAN:  return tr(STR_SYS_PLAN);
+        default:            return tr(STR_SYS_LIGHT);
+    }
+}
+
+/* ---------------- 역할별 모델 설정 저장 (<config>/miniide/models.txt) ---------------- */
+
+static void save_role_models(AiPanel *panel) {
+    char *dir = g_build_filename(g_get_user_config_dir(), "miniide", NULL);
+    g_mkdir_with_parents(dir, 0700);
+    char *path = g_build_filename(dir, "models.txt", NULL);
+    char *body = g_strdup_printf("light=%s\ncode=%s\nplan=%s\n",
+                                 panel->model_light, panel->model_code, panel->model_plan);
+    g_file_set_contents(path, body, -1, NULL);
+    g_free(body);
+    g_free(path);
+    g_free(dir);
+}
+
+/* 저장된 역할별 모델 하나 읽기 (없으면 0) */
+static gboolean load_saved_role_model(const char *key, char *out, size_t out_len) {
+    char *path = g_build_filename(g_get_user_config_dir(), "miniide", "models.txt", NULL);
+    gchar *content = NULL;
+    gboolean found = FALSE;
+    if (g_file_get_contents(path, &content, NULL, NULL) && content) {
+        gchar **lines = g_strsplit(content, "\n", -1);
+        char prefix[32];
+        snprintf(prefix, sizeof(prefix), "%s=", key);
+        for (guint i = 0; lines[i]; i++) {
+            if (g_str_has_prefix(lines[i], prefix)) {
+                g_strlcpy(out, lines[i] + strlen(prefix), out_len);
+                found = TRUE;
+                break;
+            }
+        }
+        g_strfreev(lines);
+        g_free(content);
+    }
+    g_free(path);
+    return found;
+}
+
 static int role_num_predict(AiRole role) {
     for (size_t i = 0; i < sizeof(ROLE_OPTIONS) / sizeof(ROLE_OPTIONS[0]); i++) {
         if (ROLE_OPTIONS[i].role == role) return ROLE_OPTIONS[i].num_predict;
@@ -85,21 +131,37 @@ static int role_num_predict(AiRole role) {
 static void resolve_role_models(AiPanel *panel) {
     char *tags = ai_client_tags_body(&panel->client);
 
-    const char *light = LIGHT_MODELS[0];
-    const char *code = CODE_MODELS[0];
-    const char *plan = PLAN_MODELS[0];
+    /* 역할별 선택 결과 — 기본은 각 역할의 첫 후보 */
+    char light[AI_MAX_MODEL_LEN], code[AI_MAX_MODEL_LEN], plan[AI_MAX_MODEL_LEN];
+    char saved[AI_MAX_MODEL_LEN];
+    g_strlcpy(light, LIGHT_MODELS[0], sizeof(light));
+    g_strlcpy(code, CODE_MODELS[0], sizeof(code));
+    g_strlcpy(plan, PLAN_MODELS[0], sizeof(plan));
+
     if (tags) {
         for (int i = 0; LIGHT_MODELS[i]; i++)
-            if (ai_client_body_has_model(tags, LIGHT_MODELS[i])) { light = LIGHT_MODELS[i]; break; }
+            if (ai_client_body_has_model(tags, LIGHT_MODELS[i])) { g_strlcpy(light, LIGHT_MODELS[i], sizeof(light)); break; }
         for (int i = 0; CODE_MODELS[i]; i++)
-            if (ai_client_body_has_model(tags, CODE_MODELS[i])) { code = CODE_MODELS[i]; break; }
+            if (ai_client_body_has_model(tags, CODE_MODELS[i])) { g_strlcpy(code, CODE_MODELS[i], sizeof(code)); break; }
         for (int i = 0; PLAN_MODELS[i]; i++)
-            if (ai_client_body_has_model(tags, PLAN_MODELS[i])) { plan = PLAN_MODELS[i]; break; }
+            if (ai_client_body_has_model(tags, PLAN_MODELS[i])) { g_strlcpy(plan, PLAN_MODELS[i], sizeof(plan)); break; }
+
+        /* 사용자가 설정 대화상자에서 고른 모델이 저장되어 있고 아직 설치되어 있으면 그것을 우선한다 */
+        if (load_saved_role_model("light", saved, sizeof(saved)) && ai_client_body_has_model(tags, saved)) {
+            g_strlcpy(light, saved, sizeof(light));
+        }
+        if (load_saved_role_model("code", saved, sizeof(saved)) && ai_client_body_has_model(tags, saved)) {
+            g_strlcpy(code, saved, sizeof(code));
+        }
+        if (load_saved_role_model("plan", saved, sizeof(saved)) && ai_client_body_has_model(tags, saved)) {
+            g_strlcpy(plan, saved, sizeof(plan));
+        }
         g_free(tags);
     }
-    snprintf(panel->model_light, sizeof(panel->model_light), "%s", light);
-    snprintf(panel->model_code, sizeof(panel->model_code), "%s", code);
-    snprintf(panel->model_plan, sizeof(panel->model_plan), "%s", plan);
+
+    g_strlcpy(panel->model_light, light, sizeof(panel->model_light));
+    g_strlcpy(panel->model_code, code, sizeof(panel->model_code));
+    g_strlcpy(panel->model_plan, plan, sizeof(panel->model_plan));
 }
 
 static char *build_request_json(AiPanel *panel, AiRole role) {
@@ -107,12 +169,17 @@ static char *build_request_json(AiPanel *panel, AiRole role) {
     json_escape_append(out, role_model(panel, role));
     g_string_append(out, "\",\"messages\":[");
 
+    /* 역할별 시스템 프롬프트를 항상 맨 앞에 주입 (전문가 스킬) */
+    g_string_append(out, "{\"role\":\"system\",\"content\":\"");
+    json_escape_append(out, role_system_prompt(role));
+    g_string_append(out, "\"}");
+
     /* 최근 SEND_LAST_MESSAGES 개만 보낸다 — 프롬프트가 짧아질수록 응답이 빨라진다 */
     guint start = panel->messages->len > SEND_LAST_MESSAGES
                   ? panel->messages->len - SEND_LAST_MESSAGES : 0;
     for (guint i = start; i < panel->messages->len; i++) {
         ChatMessage *m = g_ptr_array_index(panel->messages, i);
-        if (i > start) g_string_append_c(out, ',');
+        g_string_append_c(out, ',');
         g_string_append(out, "{\"role\":\"");
         json_escape_append(out, m->role);
         g_string_append(out, "\",\"content\":\"");
@@ -344,6 +411,94 @@ static void on_send_clicked(GtkButton *btn, gpointer user_data) {
     on_entry_activate(((AiPanel *)user_data)->entry, user_data);
 }
 
+/* ---------------- 역할별 모델 설정 대화상자 ---------------- */
+
+typedef struct {
+    AiPanel *panel;
+    char *tags;   /* /api/tags 본문. NULL 이면 서버에 연결 못 함 */
+} ModelsDlgJob;
+
+/* 백그라운드에서 모델 목록을 받은 뒤 메인 스레드에서 대화상자를 연다 */
+static gboolean models_dlg_idle(gpointer data) {
+    ModelsDlgJob *j = (ModelsDlgJob *)data;
+    AiPanel *panel = j->panel;
+    GPtrArray *names = ai_client_parse_model_names(j->tags);
+
+    if (!j->tags || names->len == 0) {
+        append_display(panel, "system_text", tr(STR_AI_CONN_FAIL_SHORT));
+        append_display(panel, NULL, "\n");
+    } else {
+        GtkWidget *dialog = gtk_dialog_new_with_buttons(
+            tr(STR_MODEL_DIALOG_TITLE),
+            GTK_WINDOW(gtk_widget_get_toplevel(panel->box)),
+            GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+            tr(STR_BTN_CANCEL), GTK_RESPONSE_CANCEL,
+            tr(STR_BTN_SAVE), GTK_RESPONSE_OK, NULL);
+
+        GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+        GtkWidget *grid = gtk_grid_new();
+        gtk_grid_set_row_spacing(GTK_GRID(grid), 8);
+        gtk_grid_set_column_spacing(GTK_GRID(grid), 10);
+        gtk_container_set_border_width(GTK_CONTAINER(grid), 10);
+        gtk_box_pack_start(GTK_BOX(content), grid, FALSE, FALSE, 0);
+
+        const char *labels[3] = { tr(STR_MODEL_ROLE_LIGHT), tr(STR_MODEL_ROLE_CODE), tr(STR_MODEL_ROLE_PLAN) };
+        const char *currents[3] = { panel->model_light, panel->model_code, panel->model_plan };
+        GtkWidget *combos[3];
+        for (int r = 0; r < 3; r++) {
+            GtkWidget *lbl = gtk_label_new(labels[r]);
+            gtk_widget_set_halign(lbl, GTK_ALIGN_START);
+            gtk_grid_attach(GTK_GRID(grid), lbl, 0, r, 1, 1);
+
+            combos[r] = gtk_combo_box_text_new();
+            gint active_idx = 0;
+            for (guint i = 0; i < names->len; i++) {
+                const char *nm = g_ptr_array_index(names, i);
+                gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(combos[r]), nm);
+                if (g_strcmp0(nm, currents[r]) == 0) active_idx = (gint)i;
+            }
+            gtk_combo_box_set_active(GTK_COMBO_BOX(combos[r]), active_idx);
+            gtk_grid_attach(GTK_GRID(grid), combos[r], 1, r, 1, 1);
+        }
+        gtk_widget_show_all(dialog);
+
+        if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_OK) {
+            char *sel = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(combos[0]));
+            if (sel) { g_strlcpy(panel->model_light, sel, sizeof(panel->model_light)); g_free(sel); }
+            sel = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(combos[1]));
+            if (sel) { g_strlcpy(panel->model_code, sel, sizeof(panel->model_code)); g_free(sel); }
+            sel = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(combos[2]));
+            if (sel) { g_strlcpy(panel->model_plan, sel, sizeof(panel->model_plan)); g_free(sel); }
+
+            save_role_models(panel);
+            char *ok = trf(STR_AI_MODELS_FMT, panel->model_light, panel->model_code, panel->model_plan);
+            gtk_label_set_text(panel->status, ok);
+            g_free(ok);
+        }
+        gtk_widget_destroy(dialog);
+    }
+
+    g_ptr_array_free(names, TRUE);
+    g_free(j->tags);
+    g_free(j);
+    return G_SOURCE_REMOVE;
+}
+
+static gpointer models_dlg_worker(gpointer data) {
+    ModelsDlgJob *j = (ModelsDlgJob *)data;
+    j->tags = ai_client_tags_body(&j->panel->client);
+    g_idle_add(models_dlg_idle, j);
+    return NULL;
+}
+
+static void on_model_btn_clicked(GtkButton *btn, gpointer user_data) {
+    (void)btn;
+    ModelsDlgJob *j = g_new0(ModelsDlgJob, 1);
+    j->panel = (AiPanel *)user_data;
+    GThread *th = g_thread_new("ai-models-dlg", models_dlg_worker, j);
+    g_thread_unref(th);
+}
+
 /* ---------------- 서버 상태 확인 (시작 시 1회, 백그라운드) ---------------- */
 
 typedef struct {
@@ -419,17 +574,20 @@ AiPanel *ai_panel_new(AiPanelGetCodeCb get_code, void *get_code_data,
     gtk_container_add(GTK_CONTAINER(scroll), GTK_WIDGET(panel->display));
     gtk_box_pack_start(GTK_BOX(panel->box), scroll, TRUE, TRUE, 0);
 
-    /* 퀵 액션 버튼 줄 1: 역할 전환 (2번 기능) */
+    /* 퀵 액션 버튼 줄 1: 역할 전환 (2번 기능) + 모델 설정 */
     GtkWidget *quick_row1 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
     panel->review_btn = GTK_BUTTON(gtk_button_new_with_label(tr(STR_BTN_REVIEW)));
     panel->fix_btn = GTK_BUTTON(gtk_button_new_with_label(tr(STR_BTN_FIX)));
     panel->plan_btn = GTK_BUTTON(gtk_button_new_with_label(tr(STR_BTN_PLAN)));
+    panel->model_btn = GTK_BUTTON(gtk_button_new_with_label(tr(STR_MODEL_BTN)));
     g_signal_connect(panel->review_btn, "clicked", G_CALLBACK(on_review_clicked), panel);
     g_signal_connect(panel->fix_btn, "clicked", G_CALLBACK(on_fix_clicked), panel);
     g_signal_connect(panel->plan_btn, "clicked", G_CALLBACK(on_plan_clicked), panel);
+    g_signal_connect(panel->model_btn, "clicked", G_CALLBACK(on_model_btn_clicked), panel);
     gtk_box_pack_start(GTK_BOX(quick_row1), GTK_WIDGET(panel->review_btn), FALSE, FALSE, 2);
     gtk_box_pack_start(GTK_BOX(quick_row1), GTK_WIDGET(panel->fix_btn), FALSE, FALSE, 2);
     gtk_box_pack_start(GTK_BOX(quick_row1), GTK_WIDGET(panel->plan_btn), FALSE, FALSE, 2);
+    gtk_box_pack_end(GTK_BOX(quick_row1), GTK_WIDGET(panel->model_btn), FALSE, FALSE, 2);
     gtk_box_pack_start(GTK_BOX(panel->box), quick_row1, FALSE, FALSE, 4);
 
     /* 퀵 액션 버튼 줄 2: 코드 적용 (1번 기능) */
@@ -469,6 +627,7 @@ void ai_panel_refresh_language(AiPanel *panel) {
     gtk_button_set_label(panel->plan_btn, tr(STR_BTN_PLAN));
     gtk_button_set_label(panel->apply_btn, tr(STR_BTN_APPLY));
     gtk_button_set_label(panel->send_btn, tr(STR_BTN_RUN));
+    gtk_button_set_label(panel->model_btn, tr(STR_MODEL_BTN));
     gtk_label_set_text(panel->status, tr(STR_AI_CONNECTING));
     GThread *check_thread = g_thread_new("ai-server-check", server_check_worker, panel);
     g_thread_unref(check_thread);

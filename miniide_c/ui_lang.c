@@ -128,6 +128,33 @@ static const char *STRINGS[STR_COUNT][2] = {
                               "Make a step-by-step plan to improve the following code "
                               "(plan only, no code yet):\n```\n%s\n```"},
 
+    /* ai_panel.c — 역할별 모델 설정 */
+    [STR_MODEL_BTN]          = {"⚙ 모델", "⚙ Models"},
+    [STR_MODEL_DIALOG_TITLE] = {"역할별 모델 설정", "Role Model Settings"},
+    [STR_MODEL_ROLE_LIGHT]   = {"질문 (빠른 답변용)", "Chat (fast answers)"},
+    [STR_MODEL_ROLE_CODE]    = {"코딩 (리뷰·버그 수정)", "Coding (review / bugfix)"},
+    [STR_MODEL_ROLE_PLAN]    = {"기획 (계획 세우기)", "Planning"},
+
+    /* ai_panel.c — 역할별 시스템 프롬프트(전문가 스킬) */
+    [STR_SYS_LIGHT] = {"너는 프로그래밍 도우미다. 질문에 짧고 핵심적으로 답한다. "
+                       "코드가 필요하면 ``` 코드 블록 안에만 준다.",
+                       "You are a programming assistant. Answer briefly and to the point. "
+                       "When code is needed, provide it inside ``` blocks only."},
+    [STR_SYS_CODE]  = {"너는 시니어 코드 전문가다. 코드 리뷰에서는 문제점을 심각도 순서로, "
+                       "버그 수정에서는 원인→수정 순서로 설명한다. 수정한 코드는 반드시 "
+                       "``` 코드 블록으로 준다. 불필요한 사족은 쓰지 않는다.",
+                       "You are a senior code expert. In reviews, list issues by severity; "
+                       "in bug fixes, explain the cause first, then the fix. Always provide "
+                       "corrected code inside ``` blocks. No filler."},
+    [STR_SYS_PLAN]  = {"너는 시니어 소프트웨어 기획자다. 요청을 곧바로 실행할 수 있는 "
+                       "단계별 계획으로 나눈다. 각 단계에는 (1) 무엇을 할지 (2) 어디를 고칠지 "
+                       "(파일·위치) (3) 완료 기준을 담는다. 코드는 아직 쓰지 않는다. "
+                       "마지막에 리스크와 주의점을 3줄 이내로 덧붙인다.",
+                       "You are a senior software planner. Break the request into actionable "
+                       "steps. Each step must include (1) what to do (2) where (file/location) "
+                       "(3) the done-criteria. No code yet. End with risks and notes in 3 lines "
+                       "or fewer."},
+
     /* explorer.c */
     [STR_BTN_OPEN_FOLDER] = {"📂 폴더 열기", "📂 Open Folder"},
     [STR_FOLDER_SELECT]   = {"폴더 선택", "Select Folder"},

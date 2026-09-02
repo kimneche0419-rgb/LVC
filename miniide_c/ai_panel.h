@@ -24,6 +24,7 @@ typedef struct {
     GtkButton *fix_btn;
     GtkButton *plan_btn;
     GtkButton *apply_btn;
+    GtkButton *model_btn;   /* 역할별 모델 설정 대화상자 열기 */
 
     AiClient client;
     GPtrArray *messages;     /* ChatMessage* 배열 — Ollama 로 보낼 대화 기록 */

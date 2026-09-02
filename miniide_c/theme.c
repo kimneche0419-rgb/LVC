@@ -13,7 +13,7 @@ static const char *DARK_CSS =
 
     /* 헤더바 — 상단을 한 줄로 통합한 바 */
     "headerbar { background-color: #2d2d2d; border-bottom: 1px solid #1b1b1c; min-height: 44px; }"
-    "headerbar:titlebar label { color: #d4d4d4; }"
+    "headerbar label { color: #d4d4d4; }"
 
     /* 헤더바 아이콘 버튼 — 테두리 없는 플랫 스타일 */
     ".hb-btn { background-color: transparent; color: #d4d4d4; border: none;"

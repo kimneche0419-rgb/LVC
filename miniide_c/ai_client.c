@@ -182,6 +182,22 @@ int ai_client_body_has_model(const char *tags_body, const char *model) {
     return strstr(tags_body, needle) != NULL ? 1 : 0;
 }
 
+GPtrArray *ai_client_parse_model_names(const char *tags_body) {
+    GPtrArray *names = g_ptr_array_new_with_free_func(g_free);
+    if (!tags_body) return names;
+    const char *key = "\"name\":\"";
+    size_t key_len = strlen(key);
+    const char *p = tags_body;
+    while ((p = strstr(p, key)) != NULL) {
+        const char *start = p + key_len;
+        const char *end = strchr(start, '"');
+        if (!end) break;
+        g_ptr_array_add(names, g_strndup(start, (gsize)(end - start)));
+        p = end;
+    }
+    return names;
+}
+
 int ai_client_chat_stream(AiClient *client, const char *messages_json,
                            AiChunkCallback on_chunk, void *user_data,
                            char *error_out, size_t error_out_len) {
