@@ -8,7 +8,8 @@ LDFLAGS = $(shell pkg-config --libs gtk+-3.0) -lcurl -mwindows
 
 # Windows 는 VTE 대신 conpty_terminal.c 사용 (같은 terminal.h 인터페이스)
 SRCS = main.c editor.c explorer.c conpty_terminal.c ai_client.c ai_panel.c ui_lang.c theme.c recent.c
-OBJS = $(SRCS:.c=.win.o)
+BUILD = build
+OBJS = $(addprefix $(BUILD)/,$(SRCS:.c=.win.o))
 TARGET = miniide.exe
 
 MINGW_PREFIX = /mingw64
@@ -22,8 +23,11 @@ all: $(TARGET)
 $(TARGET): $(OBJS)
 	$(CC) $(OBJS) -o $(TARGET) $(LDFLAGS)
 
-%.win.o: %.c
+$(BUILD)/%.win.o: %.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD):
+	mkdir -p $(BUILD)
 
 # 배포 폴더: mingw64 의 prefix 구조(bin/lib/share)를 그대로 유지해야
 # GTK/gdk-pixbuf 가 자기 위치 기준으로 리소스를 찾는다.
@@ -59,5 +63,6 @@ installer: bundle
 	makensis -DVERSION=1.0.0 installer/miniide.nsi
 
 clean:
-	rm -f $(OBJS) $(TARGET)
+	rm -rf $(BUILD)
+	rm -f $(TARGET)
 	rm -rf $(DIST)

@@ -5,6 +5,7 @@ miniide_c/miniide_c
 miniide_c/*.win.o
 miniide_c/miniide.exe
 miniide_c/dist/
+miniide_c/build/
 miniide_c/tests/*.exe
 miniide_c/tests/*.out
 miniide_c/tests/*.log
