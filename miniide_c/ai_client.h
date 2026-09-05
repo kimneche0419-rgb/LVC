@@ -7,6 +7,7 @@
 #define AI_CLIENT_H
 
 #include <stddef.h>
+#include <glib.h>
 
 #define AI_DEFAULT_BASE_URL "http://localhost:11434"
 #define AI_DEFAULT_MODEL "qwen2.5-coder:3b"
@@ -23,6 +24,17 @@ void ai_client_init(AiClient *client, const char *base_url, const char *model);
 
 /* 서버가 살아있는지 확인 (GET /api/tags). 살아있으면 1, 아니면 0 */
 int ai_client_is_available(AiClient *client);
+
+/* /api/tags 응답 본문 전체를 반환 (g_free 로 해제). 실패 시 NULL.
+ * 역할별 모델 자동 선택에 쓴다 — 서버에 어떤 모델이 설치됐는지 목록이다. */
+char *ai_client_tags_body(AiClient *client);
+
+/* tags 본문에서 특정 모델이 설치되어 있는지 확인. 있으면 1 */
+int ai_client_body_has_model(const char *tags_body, const char *model);
+
+/* tags 본문에서 설치된 모델 이름 전체 목록을 뽑는다.
+ * 반환값은 문자열(g_strdup)을 담은 GPtrArray — g_ptr_array_free(arr, TRUE) 로 해제. */
+GPtrArray *ai_client_parse_model_names(const char *tags_body);
 
 /* 스트리밍 응답의 각 조각(chunk)이 도착할 때마다 호출되는 콜백.
  * user_data 는 ai_client_chat_stream 호출 시 전달한 값 그대로 전달됨.

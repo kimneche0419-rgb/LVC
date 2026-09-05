@@ -37,11 +37,29 @@ ollama pull qwen2.5-coder:3b
 
 ## 빌드 및 실행
 
+### Linux / WSL2
+
 ```bash
 cd miniide_c
 make        # 빌드
 make run    # 실행
 ```
+
+### Windows (Windows 10 1809 이상)
+
+MSYS2(mingw64)로 Windows 네이티브 exe 와 인스톨러를 만든다.
+터미널은 Windows 의 ConPTY, 한글 입출력은 UTF-8 로 지원되고
+메뉴(보기 → 언어)에서 한국어/English 를 전환할 수 있다.
+
+```bash
+# WSL 에서 (C:\msys64 에 MSYS2 + mingw64 패키지 설치 상태)
+cd miniide_c
+./build_windows.sh          # dist/MiniIDE-Setup.exe 생성
+./build_windows.sh compile  # exe 컴파일만
+```
+
+- 포터블 실행: `dist/MiniIDE/bin/miniide.exe`
+- 설치 배포: `dist/MiniIDE-Setup.exe` (시작 메뉴/바탕화면 바로가기 생성, 제어판 제거 지원)
 
 ## 사용 방법
 

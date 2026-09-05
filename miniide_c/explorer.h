@@ -28,4 +28,7 @@ Explorer *explorer_new(GtkWindow *parent_window,
 /* "폴더 열기" 버튼과 동일한 동작을 코드에서 직접 호출할 때 사용 */
 void explorer_open_folder_dialog(Explorer *explorer);
 
+/* 언어 전환 시 버튼 문구를 현재 언어로 다시 쓴다 */
+void explorer_refresh_language(Explorer *explorer);
+
 #endif
