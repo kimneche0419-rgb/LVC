@@ -12,19 +12,27 @@ BUILD = build
 OBJS = $(addprefix $(BUILD)/,$(SRCS:.c=.win.o))
 TARGET = miniide.exe
 
+# 아이콘 리소스: windres 가 miniide.rc(+miniide.ico)를 COFF 오브젝트로 감싸
+# 링크 시 exe 에 심는다 (탐색기/바로가기 아이콘의 출처).
+RC = miniide.rc
+RSRC = $(BUILD)/miniide.res.o
+
 MINGW_PREFIX = /mingw64
 DIST = dist
 APPDIR = $(DIST)/MiniIDE
 
-.PHONY: all bundle installer clean
+.PHONY: all bundle installer clean icon
 
 all: $(TARGET)
 
-$(TARGET): $(OBJS)
-	$(CC) $(OBJS) -o $(TARGET) $(LDFLAGS)
+$(TARGET): $(OBJS) $(RSRC)
+	$(CC) $(OBJS) $(RSRC) -o $(TARGET) $(LDFLAGS)
 
 $(BUILD)/%.win.o: %.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(RSRC): $(RC) miniide.ico | $(BUILD)
+	windres $(RC) -O coff -o $@
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -61,6 +69,24 @@ bundle: $(TARGET)
 # NSIS 인스톨러 생성 (NSIS 스크립트는 installer/miniide.nsi)
 installer: bundle
 	makensis -DVERSION=1.0.0 installer/miniide.nsi
+
+# miniide.ico 재생성 — 디자인은 miniide.svg 와 동일(어두운 라운드 배경 + '</>' + 파란 점).
+# ImageMagick(magick) 필요: pacman -S mingw-w64-x86_64-imagemagick
+icon: miniide.ico
+
+miniide.ico: miniide.svg | $(BUILD)
+	magick -size 256x256 xc:none \
+		-fill '#1e1e1e' -stroke '#333333' -strokewidth 4 \
+		-draw "roundrectangle 8,8 248,248 44,44" \
+		-stroke none -fill '#4ec9b0' -font '/c/Windows/Fonts/consolab.ttf' -pointsize 112 \
+		-draw "gravity center text 0,16 '</>'" \
+		-fill '#569cd6' -draw "circle 200,60 218,60" \
+		$(BUILD)/icon_256.png
+	magick $(BUILD)/icon_256.png \
+		\( -clone 0 -resize 16x16 \) \( -clone 0 -resize 32x32 \) \
+		\( -clone 0 -resize 48x48 \) \( -clone 0 -resize 64x64 \) \
+		\( -clone 0 -resize 128x128 \) -delete 0 miniide.ico
+	rm -f $(BUILD)/icon_256.png
 
 clean:
 	rm -rf $(BUILD)

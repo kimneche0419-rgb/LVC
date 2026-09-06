@@ -17,6 +17,9 @@ RequestExecutionLevel admin
 Unicode true
 
 !define MUI_ABORTWARNING
+; 인스톨러/제거 프로그램 창 아이콘 (miniide.exe 에 심긴 것과 같은 디자인)
+!define MUI_ICON "..\miniide.ico"
+!define MUI_UNICON "..\miniide.ico"
 !insertmacro MUI_PAGE_LICENSE "LICENSE.txt"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
@@ -42,6 +45,9 @@ Section "Mini IDE"
              "UninstallString" "$INSTDIR\uninstall.exe"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\MiniIDE" \
              "DisplayVersion" "${VERSION}"
+  ; 프로그램 추가/제거 목록에도 아이콘이 뜨도록
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\MiniIDE" \
+             "DisplayIcon" "$INSTDIR\bin\miniide.exe,0"
 
   WriteUninstaller "$INSTDIR\uninstall.exe"
 SectionEnd

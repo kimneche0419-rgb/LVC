@@ -1,0 +1,3 @@
+// Windows 리소스 스크립트 — windres 가 COFF 오브젝트로 감싸 링크 시 exe 에 심긴다.
+// 1 ICON: 탐색기/바로가기에서 보이는 miniide.exe 아이콘 (miniide.ico)
+1 ICON "miniide.ico"
