@@ -1,5 +1,6 @@
 #include "ai_panel.h"
 #include "ui_lang.h"
+#include "ai_skills.h"
 
 #include <string.h>
 
@@ -8,25 +9,12 @@
 #define SEND_LAST_MESSAGES 6
 #define MAX_HISTORY_MESSAGES 12
 
-/* AI 역할 — 기능마다 다른 모델이 담당한다 (사용자 요청: 역할별 모델 분리).
- * 각 역할은 후보 목록의 앞쪽부터 서버에 설치된 모델을 찾아 사용한다. */
-typedef enum {
-    AI_ROLE_LIGHT,   /* 일반 질문 — 가벼운 모델로 빠른 응답 */
-    AI_ROLE_CODE,    /* 코드 리뷰 / 버그 수정 — 코딩 특화 모델 */
-    AI_ROLE_PLAN     /* 계획 세우기 — 지시 이해가 좋은 일반 모델 */
-} AiRole;
+/* 단일 모델 정책 — 모든 요청(질문/리뷰/수정/계획)이 DeepSeek 하나로 동작한다.
+ * 후보는 서버에 설치되어 있는지 확인해 사용한다. */
+static const char *AI_MODELS[] = {"deepseek-coder-v2:16b-lite-instruct", NULL};
 
-/* 후보 순서 = 우선순위. 없는 모델은 건너뛰고 다음 후보로 자동 선택된다. */
-static const char *LIGHT_MODELS[] = {"qwen2.5-coder:1.5b", "qwen2.5-coder:3b", NULL};
-static const char *CODE_MODELS[]  = {"deepseek-coder-v2:16b-lite-instruct", "qwen2.5-coder:3b", "qwen2.5-coder:1.5b", NULL};
-static const char *PLAN_MODELS[]  = {"deepseek-coder-v2:16b-lite-instruct", "qwen2.5-coder:3b", "qwen2.5-coder:1.5b", NULL};
-
-/* 역할별 최대 출력 토큰 — 답변 길이를 제한해 완료 시간을 줄인다 */
-static const struct { AiRole role; int num_predict; } ROLE_OPTIONS[] = {
-    {AI_ROLE_LIGHT, 600},
-    {AI_ROLE_CODE,  1400},
-    {AI_ROLE_PLAN,  900},
-};
+/* 최대 출력 토큰 — 답변 길이를 제한해 완료 시간을 줄인다 */
+#define AI_NUM_PREDICT 1400
 
 typedef struct {
     char *role;
@@ -65,39 +53,22 @@ static void json_escape_append(GString *out, const char *s) {
     }
 }
 
-static const char *role_model(AiPanel *panel, AiRole role) {
-    switch (role) {
-        case AI_ROLE_CODE:  return panel->model_code;
-        case AI_ROLE_PLAN:  return panel->model_plan;
-        default:            return panel->model_light;
-    }
-}
+/* ---------------- 모델 설정 저장 (<config>/miniide/models.txt) ---------------- */
 
-/* 역할별 시스템 프롬프트 — 코딩/기획 전문가 스킬을 요청마다 주입한다 */
-static const char *role_system_prompt(AiRole role) {
-    switch (role) {
-        case AI_ROLE_CODE:  return tr(STR_SYS_CODE);
-        case AI_ROLE_PLAN:  return tr(STR_SYS_PLAN);
-        default:            return tr(STR_SYS_LIGHT);
-    }
-}
-
-/* ---------------- 역할별 모델 설정 저장 (<config>/miniide/models.txt) ---------------- */
-
-static void save_role_models(AiPanel *panel) {
+static void save_model(AiPanel *panel) {
     char *dir = g_build_filename(g_get_user_config_dir(), "miniide", NULL);
     g_mkdir_with_parents(dir, 0700);
     char *path = g_build_filename(dir, "models.txt", NULL);
-    char *body = g_strdup_printf("light=%s\ncode=%s\nplan=%s\n",
-                                 panel->model_light, panel->model_code, panel->model_plan);
+    char *body = g_strdup_printf("model=%s\n", panel->model);
     g_file_set_contents(path, body, -1, NULL);
     g_free(body);
     g_free(path);
     g_free(dir);
 }
 
-/* 저장된 역할별 모델 하나 읽기 (없으면 0) */
-static gboolean load_saved_role_model(const char *key, char *out, size_t out_len) {
+/* 저장된 모델 설정 읽기 (없으면 0) */
+static gboolean load_saved_model(char *out, size_t out_len) {
+    const char *key = "model";
     char *path = g_build_filename(g_get_user_config_dir(), "miniide", "models.txt", NULL);
     gchar *content = NULL;
     gboolean found = FALSE;
@@ -119,59 +90,36 @@ static gboolean load_saved_role_model(const char *key, char *out, size_t out_len
     return found;
 }
 
-static int role_num_predict(AiRole role) {
-    for (size_t i = 0; i < sizeof(ROLE_OPTIONS) / sizeof(ROLE_OPTIONS[0]); i++) {
-        if (ROLE_OPTIONS[i].role == role) return ROLE_OPTIONS[i].num_predict;
-    }
-    return 800;
-}
-
-/* 서버에 설치된 모델 목록에서 역할별 모델을 고른다 (첫 응답 속도와 품질 균형).
- * 서버에 연결할 수 없으면 각 역할의 첫 후보로 초기화한다. */
-static void resolve_role_models(AiPanel *panel) {
+/* 서버에 설치된 모델 목록에서 사용 모델을 확정한다.
+ * 서버에 연결할 수 없으면 첫 후보(DeepSeek)로 초기화한다. */
+static void resolve_model(AiPanel *panel) {
     char *tags = ai_client_tags_body(&panel->client);
 
-    /* 역할별 선택 결과 — 기본은 각 역할의 첫 후보 */
-    char light[AI_MAX_MODEL_LEN], code[AI_MAX_MODEL_LEN], plan[AI_MAX_MODEL_LEN];
-    char saved[AI_MAX_MODEL_LEN];
-    g_strlcpy(light, LIGHT_MODELS[0], sizeof(light));
-    g_strlcpy(code, CODE_MODELS[0], sizeof(code));
-    g_strlcpy(plan, PLAN_MODELS[0], sizeof(plan));
+    char model[AI_MAX_MODEL_LEN], saved[AI_MAX_MODEL_LEN];
+    g_strlcpy(model, AI_MODELS[0], sizeof(model));
 
     if (tags) {
-        for (int i = 0; LIGHT_MODELS[i]; i++)
-            if (ai_client_body_has_model(tags, LIGHT_MODELS[i])) { g_strlcpy(light, LIGHT_MODELS[i], sizeof(light)); break; }
-        for (int i = 0; CODE_MODELS[i]; i++)
-            if (ai_client_body_has_model(tags, CODE_MODELS[i])) { g_strlcpy(code, CODE_MODELS[i], sizeof(code)); break; }
-        for (int i = 0; PLAN_MODELS[i]; i++)
-            if (ai_client_body_has_model(tags, PLAN_MODELS[i])) { g_strlcpy(plan, PLAN_MODELS[i], sizeof(plan)); break; }
+        for (int i = 0; AI_MODELS[i]; i++)
+            if (ai_client_body_has_model(tags, AI_MODELS[i])) { g_strlcpy(model, AI_MODELS[i], sizeof(model)); break; }
 
         /* 사용자가 설정 대화상자에서 고른 모델이 저장되어 있고 아직 설치되어 있으면 그것을 우선한다 */
-        if (load_saved_role_model("light", saved, sizeof(saved)) && ai_client_body_has_model(tags, saved)) {
-            g_strlcpy(light, saved, sizeof(light));
-        }
-        if (load_saved_role_model("code", saved, sizeof(saved)) && ai_client_body_has_model(tags, saved)) {
-            g_strlcpy(code, saved, sizeof(code));
-        }
-        if (load_saved_role_model("plan", saved, sizeof(saved)) && ai_client_body_has_model(tags, saved)) {
-            g_strlcpy(plan, saved, sizeof(plan));
+        if (load_saved_model(saved, sizeof(saved)) && ai_client_body_has_model(tags, saved)) {
+            g_strlcpy(model, saved, sizeof(model));
         }
         g_free(tags);
     }
 
-    g_strlcpy(panel->model_light, light, sizeof(panel->model_light));
-    g_strlcpy(panel->model_code, code, sizeof(panel->model_code));
-    g_strlcpy(panel->model_plan, plan, sizeof(panel->model_plan));
+    g_strlcpy(panel->model, model, sizeof(panel->model));
 }
 
-static char *build_request_json(AiPanel *panel, AiRole role) {
+static char *build_request_json(AiPanel *panel) {
     GString *out = g_string_new("{\"model\":\"");
-    json_escape_append(out, role_model(panel, role));
+    json_escape_append(out, panel->model);
     g_string_append(out, "\",\"messages\":[");
 
-    /* 역할별 시스템 프롬프트를 항상 맨 앞에 주입 (전문가 스킬) */
+    /* 시스템 프롬프트를 항상 맨 앞에 주입 */
     g_string_append(out, "{\"role\":\"system\",\"content\":\"");
-    json_escape_append(out, role_system_prompt(role));
+    json_escape_append(out, tr(STR_SYS));
     g_string_append(out, "\"}");
 
     /* 최근 SEND_LAST_MESSAGES 개만 보낸다 — 프롬프트가 짧아질수록 응답이 빨라진다 */
@@ -186,9 +134,9 @@ static char *build_request_json(AiPanel *panel, AiRole role) {
         json_escape_append(out, m->content);
         g_string_append(out, "\"}");
     }
-    /* num_predict: 역할별 최대 출력 토큰 — 답변이 알아서 간결해져 완료가 빨라진다 */
+    /* num_predict: 최대 출력 토큰 — 답변이 알아서 간결해져 완료가 빨라진다 */
     g_string_append_printf(out, "],\"stream\":true,\"options\":{\"num_predict\":%d}}",
-                           role_num_predict(role));
+                           AI_NUM_PREDICT);
     return g_string_free(out, FALSE);
 }
 
@@ -268,7 +216,7 @@ static gboolean finalize_job_idle(gpointer data) {
     if (job->failed) {
         gtk_label_set_text(panel->status, tr(STR_AI_CONN_FAIL_SHORT));
     } else {
-        char *ok = trf(STR_AI_MODELS_FMT, panel->model_light, panel->model_code, panel->model_plan);
+        char *ok = trf(STR_AI_MODELS_FMT, panel->model);
         gtk_label_set_text(panel->status, ok);
         g_free(ok);
     }
@@ -292,7 +240,7 @@ static gpointer request_worker(gpointer data) {
     return NULL;
 }
 
-static void ask(AiPanel *panel, const char *query, AiRole role) {
+static void ask(AiPanel *panel, const char *query) {
     if (panel->is_requesting) return;
     if (!query || query[0] == '\0') return;
 
@@ -310,68 +258,79 @@ static void ask(AiPanel *panel, const char *query, AiRole role) {
 
     AiJob *job = g_new0(AiJob, 1);
     job->panel = panel;
-    job->messages_json = build_request_json(panel, role);
+    job->messages_json = build_request_json(panel);
     job->full_response = g_string_new("");
 
     GThread *thread = g_thread_new("ai-request", request_worker, job);
     g_thread_unref(thread);
 }
 
-/* ---------------- 퀵 액션 (2번 기능: 역할 전환) ---------------- */
+/* ---------------- 스킬 실행 ---------------- */
 
-static void on_review_clicked(GtkButton *btn, gpointer user_data) {
-    (void)btn;
-    AiPanel *panel = (AiPanel *)user_data;
-    char *code = panel->get_code ? panel->get_code(panel->get_code_data) : NULL;
-    if (!code || code[0] == '\0') {
-        append_display(panel, "system_text", tr(STR_AI_NO_CODE));
-        g_free(code);
-        return;
-    }
-    char *prompt = trf(STR_PROMPT_REVIEW, code);
-    ask(panel, prompt, AI_ROLE_CODE);
-    g_free(prompt);
-    g_free(code);
-}
+/* 메뉴 항목 → 스킬 연결용. 스킬 포인터는 정적 표를 가리키므로 안정적이다. */
+typedef struct {
+    AiPanel *panel;
+    const AiSkill *skill;
+} SkillRef;
 
-static void on_fix_clicked(GtkButton *btn, gpointer user_data) {
-    (void)btn;
-    AiPanel *panel = (AiPanel *)user_data;
-    char *code = panel->get_code ? panel->get_code(panel->get_code_data) : NULL;
-    if (!code || code[0] == '\0') {
-        append_display(panel, "system_text", tr(STR_AI_NO_CODE));
-        g_free(code);
-        return;
-    }
-    char *prompt = trf(STR_PROMPT_FIX, code);
-    ask(panel, prompt, AI_ROLE_CODE);
-    g_free(prompt);
-    g_free(code);
-}
-
-/* 계획 세우기 — 새 기능(2번). 입력창에 적은 요청을 바탕으로 구현 계획을 세워달라고 요청.
- * 입력창이 비어 있으면 현재 코드를 바탕으로 개선 계획을 세워달라고 요청. */
-static void on_plan_clicked(GtkButton *btn, gpointer user_data) {
-    (void)btn;
-    AiPanel *panel = (AiPanel *)user_data;
-    const char *typed = gtk_entry_get_text(panel->entry);
+/* 스킬 하나 실행 — CODE형은 에디터 코드를, TEXT형은 입력창 요청을 프롬프트에 넣는다 */
+static void on_skill_activate(GtkMenuItem *item, gpointer user_data) {
+    (void)item;
+    SkillRef *ref = (SkillRef *)user_data;
+    AiPanel *panel = ref->panel;
+    const AiSkill *skill = ref->skill;
 
     char *prompt;
-    if (typed && typed[0] != '\0') {
-        prompt = trf(STR_PROMPT_PLAN_TYPED, typed);
-        gtk_entry_set_text(panel->entry, "");
-    } else {
+    if (skill->input == AI_SKILL_INPUT_CODE) {
         char *code = panel->get_code ? panel->get_code(panel->get_code_data) : NULL;
         if (!code || code[0] == '\0') {
-            append_display(panel, "system_text", tr(STR_AI_PLAN_HINT));
+            append_display(panel, "system_text", tr(STR_AI_NO_CODE));
             g_free(code);
             return;
         }
-        prompt = trf(STR_PROMPT_PLAN_CODE, code);
+        prompt = trf(skill->prompt, code);
         g_free(code);
+    } else {
+        const char *typed = gtk_entry_get_text(panel->entry);
+        if (!typed || typed[0] == '\0') {
+            append_display(panel, "system_text", tr(STR_SKILL_NEED_TEXT));
+            return;
+        }
+        char *copy = g_strdup(typed);
+        gtk_entry_set_text(panel->entry, "");
+        prompt = trf(skill->prompt, copy);
+        g_free(copy);
     }
-    ask(panel, prompt, AI_ROLE_PLAN);
+
+    ask(panel, prompt);
     g_free(prompt);
+}
+
+/* 스킬 메뉴 조립 — 언어 전환 시 새 언어로 다시 만든다. */
+static void build_skill_menu(AiPanel *panel) {
+    GtkWidget *old = GTK_WIDGET(gtk_menu_button_get_popup(GTK_MENU_BUTTON(panel->skill_btn)));
+    if (old) gtk_widget_destroy(old);
+
+    GtkWidget *menu = gtk_menu_new();
+    for (int c = 0; c < ai_skill_cat_count(); c++) {
+        GtkWidget *sub = gtk_menu_new();
+        for (int i = 0; i < ai_skill_count((AiSkillCat)c); i++) {
+            const AiSkill *skill = ai_skill_at((AiSkillCat)c, i);
+            GtkWidget *item = gtk_menu_item_new_with_label(tr(skill->name));
+            SkillRef *ref = g_new(SkillRef, 1);
+            ref->panel = panel;
+            ref->skill = skill;
+            g_signal_connect(item, "activate", G_CALLBACK(on_skill_activate), ref);
+            /* 항목이 사라질 때 ref 도 함께 해제 — 메뉴 재조립 시 누수 방지 */
+            g_object_set_data_full(G_OBJECT(item), "skill-ref", ref, g_free);
+            gtk_menu_shell_append(GTK_MENU_SHELL(sub), item);
+        }
+        GtkWidget *cat_item = gtk_menu_item_new_with_label(ai_skill_cat_name((AiSkillCat)c));
+        gtk_menu_item_set_submenu(GTK_MENU_ITEM(cat_item), sub);
+        gtk_menu_shell_append(GTK_MENU_SHELL(menu), cat_item);
+    }
+    gtk_widget_show_all(menu);
+    gtk_menu_button_set_popup(GTK_MENU_BUTTON(panel->skill_btn), menu);
 }
 
 static void on_apply_clicked(GtkButton *btn, gpointer user_data) {
@@ -402,7 +361,7 @@ static void on_entry_activate(GtkEntry *entry, gpointer user_data) {
     if (!text || text[0] == '\0') return;
     char *copy = g_strdup(text);
     gtk_entry_set_text(entry, "");
-    ask(panel, copy, AI_ROLE_LIGHT);  /* 자유 질문은 가벼운 모델로 빠르게 */
+    ask(panel, copy);
     g_free(copy);
 }
 
@@ -411,7 +370,7 @@ static void on_send_clicked(GtkButton *btn, gpointer user_data) {
     on_entry_activate(((AiPanel *)user_data)->entry, user_data);
 }
 
-/* ---------------- 역할별 모델 설정 대화상자 ---------------- */
+/* ---------------- 모델 설정 대화상자 ---------------- */
 
 typedef struct {
     AiPanel *panel;
@@ -436,42 +395,25 @@ static gboolean models_dlg_idle(gpointer data) {
             tr(STR_BTN_SAVE), GTK_RESPONSE_OK, NULL);
 
         GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
-        GtkWidget *grid = gtk_grid_new();
-        gtk_grid_set_row_spacing(GTK_GRID(grid), 8);
-        gtk_grid_set_column_spacing(GTK_GRID(grid), 10);
-        gtk_container_set_border_width(GTK_CONTAINER(grid), 10);
-        gtk_box_pack_start(GTK_BOX(content), grid, FALSE, FALSE, 0);
+        GtkWidget *combo = gtk_combo_box_text_new();
+        gtk_container_set_border_width(GTK_CONTAINER(combo), 10);
+        gtk_box_pack_start(GTK_BOX(content), combo, FALSE, FALSE, 0);
 
-        const char *labels[3] = { tr(STR_MODEL_ROLE_LIGHT), tr(STR_MODEL_ROLE_CODE), tr(STR_MODEL_ROLE_PLAN) };
-        const char *currents[3] = { panel->model_light, panel->model_code, panel->model_plan };
-        GtkWidget *combos[3];
-        for (int r = 0; r < 3; r++) {
-            GtkWidget *lbl = gtk_label_new(labels[r]);
-            gtk_widget_set_halign(lbl, GTK_ALIGN_START);
-            gtk_grid_attach(GTK_GRID(grid), lbl, 0, r, 1, 1);
-
-            combos[r] = gtk_combo_box_text_new();
-            gint active_idx = 0;
-            for (guint i = 0; i < names->len; i++) {
-                const char *nm = g_ptr_array_index(names, i);
-                gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(combos[r]), nm);
-                if (g_strcmp0(nm, currents[r]) == 0) active_idx = (gint)i;
-            }
-            gtk_combo_box_set_active(GTK_COMBO_BOX(combos[r]), active_idx);
-            gtk_grid_attach(GTK_GRID(grid), combos[r], 1, r, 1, 1);
+        gint active_idx = 0;
+        for (guint i = 0; i < names->len; i++) {
+            const char *nm = g_ptr_array_index(names, i);
+            gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(combo), nm);
+            if (g_strcmp0(nm, panel->model) == 0) active_idx = (gint)i;
         }
+        gtk_combo_box_set_active(GTK_COMBO_BOX(combo), active_idx);
         gtk_widget_show_all(dialog);
 
         if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_OK) {
-            char *sel = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(combos[0]));
-            if (sel) { g_strlcpy(panel->model_light, sel, sizeof(panel->model_light)); g_free(sel); }
-            sel = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(combos[1]));
-            if (sel) { g_strlcpy(panel->model_code, sel, sizeof(panel->model_code)); g_free(sel); }
-            sel = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(combos[2]));
-            if (sel) { g_strlcpy(panel->model_plan, sel, sizeof(panel->model_plan)); g_free(sel); }
+            char *sel = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(combo));
+            if (sel) { g_strlcpy(panel->model, sel, sizeof(panel->model)); g_free(sel); }
 
-            save_role_models(panel);
-            char *ok = trf(STR_AI_MODELS_FMT, panel->model_light, panel->model_code, panel->model_plan);
+            save_model(panel);
+            char *ok = trf(STR_AI_MODELS_FMT, panel->model);
             gtk_label_set_text(panel->status, ok);
             g_free(ok);
         }
@@ -509,7 +451,7 @@ typedef struct {
 static gboolean server_check_idle(gpointer data) {
     ServerCheckResult *r = (ServerCheckResult *)data;
     char *text = r->available
-        ? trf(STR_AI_MODELS_FMT, r->panel->model_light, r->panel->model_code, r->panel->model_plan)
+        ? trf(STR_AI_MODELS_FMT, r->panel->model)
         : (char *)tr(STR_AI_CONN_FAIL);
     gtk_label_set_text(r->panel->status, text);
     if (r->available) g_free(text);
@@ -522,8 +464,8 @@ static gpointer server_check_worker(gpointer data) {
     ServerCheckResult *r = g_new0(ServerCheckResult, 1);
     r->panel = panel;
     r->available = ai_client_is_available(&panel->client);
-    /* 서버가 살아 있으면 설치된 모델 목록을 보고 역할별 모델을 확정한다 */
-    if (r->available) resolve_role_models(panel);
+    /* 서버가 살아 있으면 설치된 모델 목록을 보고 사용 모델을 확정한다 */
+    if (r->available) resolve_model(panel);
     g_idle_add(server_check_idle, r);
     return NULL;
 }
@@ -541,7 +483,7 @@ AiPanel *ai_panel_new(AiPanelGetCodeCb get_code, void *get_code_data,
     panel->last_bot_response = g_string_new("");
     ai_client_init(&panel->client, NULL, NULL);
     /* 기본값으로 먼저 채워두고, 서버 확인이 끝나면 실제 설치된 모델로 교체된다 */
-    resolve_role_models(panel);
+    resolve_model(panel);
 
     panel->box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 
@@ -574,19 +516,14 @@ AiPanel *ai_panel_new(AiPanelGetCodeCb get_code, void *get_code_data,
     gtk_container_add(GTK_CONTAINER(scroll), GTK_WIDGET(panel->display));
     gtk_box_pack_start(GTK_BOX(panel->box), scroll, TRUE, TRUE, 0);
 
-    /* 퀵 액션 버튼 줄 1: 역할 전환 (2번 기능) + 모델 설정 */
+    /* 퀵 액션 버튼 줄 1: 스킬 메뉴 + 모델 설정 */
     GtkWidget *quick_row1 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
-    panel->review_btn = GTK_BUTTON(gtk_button_new_with_label(tr(STR_BTN_REVIEW)));
-    panel->fix_btn = GTK_BUTTON(gtk_button_new_with_label(tr(STR_BTN_FIX)));
-    panel->plan_btn = GTK_BUTTON(gtk_button_new_with_label(tr(STR_BTN_PLAN)));
+    panel->skill_btn = gtk_menu_button_new();
+    gtk_button_set_label(GTK_BUTTON(panel->skill_btn), tr(STR_SKILL_BTN));
+    build_skill_menu(panel);
     panel->model_btn = GTK_BUTTON(gtk_button_new_with_label(tr(STR_MODEL_BTN)));
-    g_signal_connect(panel->review_btn, "clicked", G_CALLBACK(on_review_clicked), panel);
-    g_signal_connect(panel->fix_btn, "clicked", G_CALLBACK(on_fix_clicked), panel);
-    g_signal_connect(panel->plan_btn, "clicked", G_CALLBACK(on_plan_clicked), panel);
     g_signal_connect(panel->model_btn, "clicked", G_CALLBACK(on_model_btn_clicked), panel);
-    gtk_box_pack_start(GTK_BOX(quick_row1), GTK_WIDGET(panel->review_btn), FALSE, FALSE, 2);
-    gtk_box_pack_start(GTK_BOX(quick_row1), GTK_WIDGET(panel->fix_btn), FALSE, FALSE, 2);
-    gtk_box_pack_start(GTK_BOX(quick_row1), GTK_WIDGET(panel->plan_btn), FALSE, FALSE, 2);
+    gtk_box_pack_start(GTK_BOX(quick_row1), panel->skill_btn, FALSE, FALSE, 2);
     gtk_box_pack_end(GTK_BOX(quick_row1), GTK_WIDGET(panel->model_btn), FALSE, FALSE, 2);
     gtk_box_pack_start(GTK_BOX(panel->box), quick_row1, FALSE, FALSE, 4);
 
@@ -622,9 +559,8 @@ AiPanel *ai_panel_new(AiPanelGetCodeCb get_code, void *get_code_data,
 /* 언어 전환 시 — 정적 문구를 다시 쓰고 서버 상태를 새 언어로 다시 확인한다 */
 void ai_panel_refresh_language(AiPanel *panel) {
     gtk_label_set_text(GTK_LABEL(panel->header), tr(STR_AI_HEADER));
-    gtk_button_set_label(panel->review_btn, tr(STR_BTN_REVIEW));
-    gtk_button_set_label(panel->fix_btn, tr(STR_BTN_FIX));
-    gtk_button_set_label(panel->plan_btn, tr(STR_BTN_PLAN));
+    gtk_button_set_label(GTK_BUTTON(panel->skill_btn), tr(STR_SKILL_BTN));
+    build_skill_menu(panel);
     gtk_button_set_label(panel->apply_btn, tr(STR_BTN_APPLY));
     gtk_button_set_label(panel->send_btn, tr(STR_BTN_RUN));
     gtk_button_set_label(panel->model_btn, tr(STR_MODEL_BTN));

@@ -1,6 +1,7 @@
 /* AI 어시스턴트 패널 — 로컬 Ollama와 대화 + 코드 적용.
  * 파이썬 버전(miniide/ai_panel.py)의 AIPanel 을 C로 이식.
- * 2번 기능: 코드 리뷰 / 버그 수정 / 계획 세우기 로 AI 역할을 나눔.
+ * 단일 모델(DeepSeek)로 모든 요청을 처리하고, 스킬 메뉴(ai_skills)로
+ * 코딩/기획/학습/자동화 프롬프트를 골라 쓴다.
  */
 #ifndef AI_PANEL_H
 #define AI_PANEL_H
@@ -20,21 +21,17 @@ typedef struct {
 
     /* 언어 전환 시 문구를 다시 쓰기 위해 보관하는 위젯들 */
     GtkWidget *header;
-    GtkButton *review_btn;
-    GtkButton *fix_btn;
-    GtkButton *plan_btn;
+    GtkWidget *skill_btn;   /* 스킬 메뉴 버튼 (분야별 하위 메뉴) */
     GtkButton *apply_btn;
-    GtkButton *model_btn;   /* 역할별 모델 설정 대화상자 열기 */
+    GtkButton *model_btn;   /* 모델 설정 대화상자 열기 */
 
     AiClient client;
     GPtrArray *messages;     /* ChatMessage* 배열 — Ollama 로 보낼 대화 기록 */
     GString *last_bot_response;
     gboolean is_requesting;
 
-    /* 역할별 모델 — 시작 시 서버에 설치된 모델을 확인해 자동으로 고른다 */
-    char model_light[AI_MAX_MODEL_LEN];  /* 일반 질문: 가장 가벼운 모델 */
-    char model_code[AI_MAX_MODEL_LEN];   /* 코드 리뷰/버그 수정: 코딩 모델 */
-    char model_plan[AI_MAX_MODEL_LEN];   /* 계획 세우기: 기획(지시) 모델 */
+    /* 사용 모델 — 단일 모델(DeepSeek). 시작 시 서버에 설치되어 있는지 확인한다 */
+    char model[AI_MAX_MODEL_LEN];
 
     AiPanelGetCodeCb get_code;
     void *get_code_data;
