@@ -117,11 +117,6 @@ static char *build_request_json(AiPanel *panel) {
     json_escape_append(out, panel->model);
     g_string_append(out, "\",\"messages\":[");
 
-    /* 시스템 프롬프트를 항상 맨 앞에 주입 */
-    g_string_append(out, "{\"role\":\"system\",\"content\":\"");
-    json_escape_append(out, tr(STR_SYS));
-    g_string_append(out, "\"}");
-
     /* 최근 SEND_LAST_MESSAGES 개만 보낸다 — 프롬프트가 짧아질수록 응답이 빨라진다 */
     guint start = panel->messages->len > SEND_LAST_MESSAGES
                   ? panel->messages->len - SEND_LAST_MESSAGES : 0;
@@ -216,9 +211,7 @@ static gboolean finalize_job_idle(gpointer data) {
     if (job->failed) {
         gtk_label_set_text(panel->status, tr(STR_AI_CONN_FAIL_SHORT));
     } else {
-        char *ok = trf(STR_AI_MODELS_FMT, panel->model);
-        gtk_label_set_text(panel->status, ok);
-        g_free(ok);
+        gtk_label_set_text(panel->status, "");
     }
 
     g_string_free(job->full_response, TRUE);
@@ -413,9 +406,7 @@ static gboolean models_dlg_idle(gpointer data) {
             if (sel) { g_strlcpy(panel->model, sel, sizeof(panel->model)); g_free(sel); }
 
             save_model(panel);
-            char *ok = trf(STR_AI_MODELS_FMT, panel->model);
-            gtk_label_set_text(panel->status, ok);
-            g_free(ok);
+            gtk_label_set_text(panel->status, "");
         }
         gtk_widget_destroy(dialog);
     }
@@ -450,11 +441,8 @@ typedef struct {
 
 static gboolean server_check_idle(gpointer data) {
     ServerCheckResult *r = (ServerCheckResult *)data;
-    char *text = r->available
-        ? trf(STR_AI_MODELS_FMT, r->panel->model)
-        : (char *)tr(STR_AI_CONN_FAIL);
-    gtk_label_set_text(r->panel->status, text);
-    if (r->available) g_free(text);
+    /* 성공 문구는 표시하지 않는다 — 실패(⚠) 안내만 보여준다 */
+    gtk_label_set_text(r->panel->status, r->available ? "" : tr(STR_AI_CONN_FAIL));
     g_free(r);
     return G_SOURCE_REMOVE;
 }

@@ -1,8 +1,8 @@
 #include "ai_skills.h"
 
 /* 분야별 스킬 목록 — 순서가 곧 메뉴 표시 순서다.
- * 프롬프트 공통 규칙: (1) 전문가 역할은 공통 시스템 프롬프트(STR_SYS)가 담당하고
- * 여기서는 작업 지시만 준다 (2) 단계를 번호로 명시해 단계별 사고를 유도한다
+ * 프롬프트 공통 규칙: (1) 여기서는 작업 지시만 준다(별도의 시스템 프롬프트는 없음)
+ * (2) 단계를 번호로 명시해 단계별 사고를 유도한다
  * (3) 결과물은 ``` 코드 블록 형식을 강제한다. */
 static const AiSkill QUALITY_SKILLS[] = {
     {STR_SKILL_REVIEW,   AI_SKILL_INPUT_CODE, STR_PROMPT_SKILL_REVIEW},

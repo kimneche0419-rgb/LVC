@@ -84,9 +84,6 @@ static const char *STRINGS[STR_COUNT][2] = {
     /* ai_panel.c */
     [STR_AI_HEADER]        = {" 🤖 AI Assistant (로컬)", " 🤖 AI Assistant (local)"},
     [STR_AI_CONNECTING]    = {"연결 확인 중...", "Checking connection..."},
-    [STR_AI_CONNECTED_FMT] = {"✅ Ollama 연결됨 (%s)", "✅ Ollama connected (%s)"},
-    [STR_AI_MODELS_FMT]    = {"✅ Ollama — 모델 %s",
-                              "✅ Ollama — model %s"},
     [STR_AI_CONN_FAIL]     = {"⚠ Ollama 서버에 연결할 수 없음 — 'ollama serve' 실행 필요",
                               "⚠ Cannot reach the Ollama server — run 'ollama serve' first"},
     [STR_AI_CONN_FAIL_SHORT] = {"⚠ Ollama 연결 실패", "⚠ Ollama connection failed"},
@@ -112,16 +109,6 @@ static const char *STRINGS[STR_COUNT][2] = {
     /* ai_panel.c — 모델 설정 */
     [STR_MODEL_BTN]          = {"⚙ 모델", "⚙ Models"},
     [STR_MODEL_DIALOG_TITLE] = {"모델 설정", "Model Settings"},
-
-    /* ai_panel.c — 시스템 프롬프트(전문가 스킬) */
-    [STR_SYS] = {"너는 시니어 코드 전문가다. 질문에는 짧고 핵심적으로 답한다. "
-                 "코드 리뷰에서는 문제점을 심각도 순서로, 버그 수정에서는 원인→수정 순서로 "
-                 "설명한다. 코드가 필요하면 반드시 ``` 코드 블록 안에만 준다. "
-                 "불필요한 사족은 쓰지 않는다.",
-                 "You are a senior code expert. Answer briefly and to the point. "
-                 "In reviews, list issues by severity; in bug fixes, explain the cause "
-                 "first, then the fix. When code is needed, provide it inside ``` blocks "
-                 "only. No filler."},
 
     /* ai_panel.c — 스킬 메뉴 (ai_skills) */
     [STR_SKILL_BTN] = {"🛠 스킬", "🛠 Skills"},

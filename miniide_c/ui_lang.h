@@ -47,7 +47,7 @@ typedef enum {
     STR_WELCOME_RECENT,
 
     /* ai_panel.c */
-    STR_AI_HEADER, STR_AI_CONNECTING, STR_AI_CONNECTED_FMT, STR_AI_MODELS_FMT,
+    STR_AI_HEADER, STR_AI_CONNECTING,
     STR_AI_CONN_FAIL, STR_AI_CONN_FAIL_SHORT, STR_AI_BUSY,
     STR_AI_ERROR_FMT, STR_AI_USER_TAG, STR_AI_BOT_TAG,
     STR_BTN_APPLY, STR_BTN_RUN,
@@ -56,9 +56,6 @@ typedef enum {
 
     /* ai_panel.c — 모델 설정 */
     STR_MODEL_BTN, STR_MODEL_DIALOG_TITLE,
-
-    /* ai_panel.c — 시스템 프롬프트(전문가 스킬) */
-    STR_SYS,
 
     /* ai_panel.c — 스킬 메뉴 (ai_skills) */
     STR_SKILL_BTN,
